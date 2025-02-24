@@ -1,0 +1,72 @@
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# Logs
+logs/
+*.log
+*.log.*
+log/
+
+# Chromedriver and browser files
+chromedriver
+chromedriver.exe
+*.crx
+*.pem
+*.xpi
+*.zip
+.undetected_chromedriver/
+
+# Environment and config
+.env
+*.env
+config.ini
+config.yaml
+settings.json
+*.ini
+!example.config.ini
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+.DS_Store
+
+# User-specific files
+users.txt
+accounts.txt
+credentials.txt
+*.csv
+!example.users.txt
+
+# System
+.directory
+desktop.ini
+Thumbs.db
+
+# Runtime files
+*.pid
+*.lock
+.chrome/
+tmp/
+temp/
