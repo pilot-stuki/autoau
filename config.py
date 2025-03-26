@@ -2,6 +2,7 @@ import os
 import yaml
 from datetime import datetime
 from pytz import timezone
+from resource_manager import get_resource_manager
 
 
 class Config:
@@ -21,8 +22,17 @@ class Config:
     def get_target_url(self) -> str:
         return self._config['target_url']
 
-    def get_visibility(self) -> bool:
-        return self._config['visibility']
+    def get_visibility(self):
+        """Возвращает настройку видимости браузера"""
+        # Если запущено в GitHub Codespace, всегда используем безголовый режим
+        resource_mgr = get_resource_manager()
+        
+        if resource_mgr.is_running_in_github_codespace():
+            # В GitHub Codespace всегда используем headless режим
+            return False
+            
+        # Иначе используем настройку из конфига
+        return self._config.get('visibility', False)
 
     def get_log_file(self) -> bool:
         return self._config['log_file']

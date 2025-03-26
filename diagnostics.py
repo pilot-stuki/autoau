@@ -55,3 +55,54 @@ def kill_orphaned_processes():
             
     if killed:
         logger.info(f"Killed {killed} orphaned chrome processes")
+
+def log_memory_usage():
+    """
+    Логирует и возвращает информацию об использовании памяти системой.
+    
+    Returns:
+        str: Строка с информацией об использовании памяти
+    """
+    mem = psutil.virtual_memory()
+    memory_info = f"Memory: {mem.percent}% used (Available: {mem.available/1024/1024:.1f}MB)"
+    logger.info(memory_info)
+    return memory_info
+
+def log_chrome_processes():
+    """
+    Логирует и возвращает информацию о процессах Chrome и ChromeDriver.
+    
+    Returns:
+        str: Строка с информацией о процессах Chrome
+    """
+    chrome_processes = []
+    
+    try:
+        for proc in psutil.process_iter(['name', 'pid']):
+            try:
+                proc_name = proc.name().lower()
+                if 'chrome' in proc_name or 'chromedriver' in proc_name:
+                    # Получаем информацию о процессе
+                    proc_info = {
+                        'pid': proc.pid,
+                        'name': proc.name(),
+                        'memory_mb': proc.memory_info().rss / 1024 / 1024  # Конвертируем в МБ
+                    }
+                    chrome_processes.append(proc_info)
+            except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
+                continue
+    except Exception as e:
+        logger.error(f"Ошибка при получении информации о процессах Chrome: {e}")
+        
+    # Формируем строку с информацией
+    total_memory = sum(p['memory_mb'] for p in chrome_processes)
+    info = f"Chrome processes: {len(chrome_processes)}"
+    
+    if chrome_processes:
+        info += f", Total memory: {total_memory:.1f}MB"
+        # Добавляем детали о процессах
+        for proc in chrome_processes:
+            info += f"\nPID {proc['pid']} ({proc['name']}): {proc['memory_mb']:.1f}MB"
+    
+    logger.info(info)
+    return info
