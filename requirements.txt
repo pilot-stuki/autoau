@@ -6,5 +6,6 @@ urllib3>=1.26.0
 certifi>=2021.10.8
 cryptography>=44.0.0
 pytz>=2021.3
+webdriver-manager>=3.8.0
 # Минимальные зависимости для работы с GitHub Codespaces
 # Добавлено для оптимизации ресурсов 
