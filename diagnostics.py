@@ -1,108 +1,162 @@
-import psutil
 import os
+import subprocess
+import threading
+import time
 import logging
+import psutil
+import platform
 from datetime import datetime
 
+# Настройка логгера
 logger = logging.getLogger(__name__)
-
-def get_process_info(proc):
-    """Get detailed process information"""
-    try:
-        return {
-            'pid': proc.pid,
-            'memory': proc.memory_info().rss / 1024 / 1024,  # MB
-            'cpu': proc.cpu_percent(),
-            'status': proc.status(),
-            'create_time': datetime.fromtimestamp(proc.create_time())
-        }
-    except (psutil.NoSuchProcess, psutil.AccessDenied):
-        return None
-
-def log_system_status():
-    """Log current system status"""
-    mem = psutil.virtual_memory()
-    logger.info(f"Memory usage: {mem.percent}% (Available: {mem.available/1024/1024:.1f}MB)")
-    
-    chrome_processes = []
-    for proc in psutil.process_iter(['name']):
-        try:
-            if proc.name() in ['chrome', 'chromedriver']:
-                info = get_process_info(proc)
-                if info:
-                    chrome_processes.append(info)
-        except (psutil.NoSuchProcess, psutil.AccessDenied):
-            continue
-            
-    logger.info(f"Chrome processes: {len(chrome_processes)}")
-    for proc in chrome_processes:
-        logger.info(f"Chrome PID {proc['pid']}: {proc['memory']:.1f}MB, CPU: {proc['cpu']}%")
-
-def kill_orphaned_processes():
-    """Kill chrome processes older than threshold"""
-    threshold = 3600  # 1 hour
-    now = datetime.now()
-    killed = 0
-    
-    for proc in psutil.process_iter(['name', 'pid', 'create_time']):
-        try:
-            if proc.name() in ['chrome', 'chromedriver']:
-                age = (now - datetime.fromtimestamp(proc.create_time())).total_seconds()
-                if age > threshold:
-                    proc.kill()
-                    killed += 1
-        except (psutil.NoSuchProcess, psutil.AccessDenied):
-            continue
-            
-    if killed:
-        logger.info(f"Killed {killed} orphaned chrome processes")
 
 def log_memory_usage():
     """
-    Логирует и возвращает информацию об использовании памяти системой.
+    Логирует информацию об использовании памяти
     
     Returns:
-        str: Строка с информацией об использовании памяти
+        str: Строка с информацией о памяти
     """
-    mem = psutil.virtual_memory()
-    memory_info = f"Memory: {mem.percent}% used (Available: {mem.available/1024/1024:.1f}MB)"
-    logger.info(memory_info)
-    return memory_info
+    try:
+        # Получаем информацию о виртуальной памяти
+        mem = psutil.virtual_memory()
+        
+        # Получаем информацию о текущем процессе
+        try:
+            current_process = psutil.Process(os.getpid())
+            process_memory = current_process.memory_info().rss / (1024 * 1024)
+        except (psutil.NoSuchProcess, psutil.AccessDenied):
+            process_memory = 0
+        
+        return f"{mem.percent}% used, {process_memory:.1f}MB for this process"
+    except Exception as e:
+        logger.error(f"Ошибка при получении информации о памяти: {e}")
+        return "Error"
 
 def log_chrome_processes():
     """
-    Логирует и возвращает информацию о процессах Chrome и ChromeDriver.
+    Логирует информацию о запущенных процессах Chrome
     
     Returns:
-        str: Строка с информацией о процессах Chrome
+        str: Строка с информацией о процессах
     """
-    chrome_processes = []
-    
     try:
-        for proc in psutil.process_iter(['name', 'pid']):
+        # Безопасное получение информации о Chrome процессах
+        chrome_processes = []
+        for proc in psutil.process_iter(['pid', 'name', 'memory_info']):
             try:
-                proc_name = proc.name().lower()
-                if 'chrome' in proc_name or 'chromedriver' in proc_name:
-                    # Получаем информацию о процессе
-                    proc_info = {
-                        'pid': proc.pid,
-                        'name': proc.name(),
-                        'memory_mb': proc.memory_info().rss / 1024 / 1024  # Конвертируем в МБ
-                    }
-                    chrome_processes.append(proc_info)
+                if 'chrome' in proc.info['name'].lower():
+                    memory = proc.info.get('memory_info')
+                    if memory:
+                        memory_mb = memory.rss / (1024 * 1024)
+                        chrome_processes.append((proc.info['pid'], memory_mb))
             except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
+                # Пропускаем процессы, к которым нет доступа или которые уже завершились
                 continue
+
+        if chrome_processes:
+            return f"{len(chrome_processes)} processes, {sum(m for _, m in chrome_processes):.1f}MB"
+        else:
+            return "0 processes"
     except Exception as e:
-        logger.error(f"Ошибка при получении информации о процессах Chrome: {e}")
+        logger.error(f"Ошибка при получении информации о Chrome процессах: {e}")
+        return "Error"
+
+def log_system_info():
+    """
+    Логирует общую информацию о системе
+    """
+    try:
+        # Информация о системе
+        logger.info(f"Операционная система: {platform.system()} {platform.version()}")
+        logger.info(f"Имя компьютера: {platform.node()}")
+        logger.info(f"Процессор: {platform.processor()}")
         
-    # Формируем строку с информацией
-    total_memory = sum(p['memory_mb'] for p in chrome_processes)
-    info = f"Chrome processes: {len(chrome_processes)}"
+        # Информация о CPU
+        cpu_count = psutil.cpu_count(logical=False)
+        cpu_logical = psutil.cpu_count(logical=True)
+        cpu_percent = psutil.cpu_percent(interval=1)
+        logger.info(f"Физические ядра: {cpu_count}, Логические ядра: {cpu_logical}")
+        logger.info(f"Текущая загрузка CPU: {cpu_percent}%")
+        
+        # Информация о памяти
+        mem = psutil.virtual_memory()
+        logger.info(f"Оперативная память: {mem.total / 1024 / 1024 / 1024:.2f} GB")
+        logger.info(f"Использовано памяти: {mem.used / 1024 / 1024 / 1024:.2f} GB ({mem.percent}%)")
+        
+        # Информация о дисках
+        disk = psutil.disk_usage('/')
+        logger.info(f"Диск: Всего={disk.total / 1024 / 1024 / 1024:.2f} GB, "
+                   f"Свободно={disk.free / 1024 / 1024 / 1024:.2f} GB ({disk.percent}% использовано)")
+        
+        # Время работы системы
+        boot_time = datetime.fromtimestamp(psutil.boot_time()).strftime("%Y-%m-%d %H:%M:%S")
+        logger.info(f"Система запущена с: {boot_time}")
+        
+    except Exception as e:
+        logger.error(f"Ошибка при логировании системной информации: {e}")
+
+def log_network_status():
+    """
+    Проверяет и логирует состояние сетевого подключения
+    """
+    try:
+        # Проверяем доступность популярных сайтов
+        targets = [
+            "google.com",
+            "microsoft.com",
+            "cloudflare.com",
+            "scarletblue.com.au"  # Целевой сайт
+        ]
+        
+        for target in targets:
+            try:
+                # Используем разные команды в зависимости от ОС
+                param = '-n' if platform.system().lower() == 'windows' else '-c'
+                
+                # Выполняем ping с тайм-аутом для предотвращения зависаний
+                cmd = ['ping', param, '1', '-W', '2', target]
+                result = subprocess.run(cmd, capture_output=True, text=True, timeout=3)
+                
+                if result.returncode == 0:
+                    logger.info(f"Сайт {target} доступен")
+                else:
+                    logger.warning(f"Сайт {target} недоступен: {result.stdout}")
+            except subprocess.TimeoutExpired:
+                logger.warning(f"Таймаут при проверке {target}")
+            except Exception as e:
+                logger.warning(f"Ошибка при проверке {target}: {e}")
+        
+        # Сетевые соединения
+        connections = len(psutil.net_connections())
+        logger.info(f"Активных сетевых соединений: {connections}")
+        
+    except Exception as e:
+        logger.error(f"Ошибка при проверке сетевого статуса: {e}")
+
+def diagnose_system():
+    """
+    Проводит комплексную диагностику системы
+    """
+    logger.info("==== Начало системной диагностики ====")
     
-    if chrome_processes:
-        info += f", Total memory: {total_memory:.1f}MB"
-        # Добавляем детали о процессах
-        for proc in chrome_processes:
-            info += f"\nPID {proc['pid']} ({proc['name']}): {proc['memory_mb']:.1f}MB"
+    # Логируем базовую информацию о системе
+    log_system_info()
     
-    logger.info(info)
-    return info
+    # Проверяем использование памяти
+    log_memory_usage()
+    
+    # Проверяем процессы Chrome (с таймаутом 3 секунды)
+    log_chrome_processes()
+    
+    # Проверяем сетевое подключение
+    log_network_status()
+    
+    logger.info("==== Конец системной диагностики ====")
+
+if __name__ == "__main__":
+    # Настройка логирования для тестирования
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
+    
+    # Запуск диагностики
+    diagnose_system() 

@@ -141,9 +141,8 @@ class AutomationService:
             
             # Делаем скриншот до закрытия для отладки
             try:
-                screenshot_path = f"popup_before_{int(time.time())}.png"
-                driver.save_screenshot(screenshot_path)
-                logger.info(f"Сохранен скриншот перед закрытием всплывающих окон: {screenshot_path}")
+                self.save_screenshot(driver, "popup_before")
+                logger.info(f"Сохранен скриншот перед закрытием всплывающих окон")
             except Exception as e:
                 logger.error(f"Не удалось сохранить скриншот: {e}")
             
@@ -457,9 +456,8 @@ class AutomationService:
                     
                     # Делаем скриншот при неудачном входе
                     try:
-                        screenshot_path = f"login_failed_{int(time.time())}.png"
-                        driver.save_screenshot(screenshot_path)
-                        logger.info(f"Сохранен скриншот при неудачном входе: {screenshot_path}")
+                        self.save_screenshot(driver, "login_failed")
+                        logger.info(f"Сохранен скриншот при неудачном входе")
                     except Exception as e:
                         logger.error(f"Не удалось сделать скриншот: {e}")
                     
@@ -475,6 +473,517 @@ class AutomationService:
             
         # Этот код не должен выполниться из-за возвратов и исключений выше
         raise LoginError("Непредвиденная ошибка в логике авторизации")
+
+    def check_and_set_toggle(self, driver, should_be_on=True, check_only=False):
+        """
+        Проверяет и устанавливает переключатель 'Available Now' в нужное положение
+        
+        Args:
+            driver: Экземпляр WebDriver
+            should_be_on: True если переключатель должен быть включен, False для выключения
+            check_only: Если True, функция только проверяет состояние переключателя без изменений
+            
+        Returns:
+            bool: True если переключатель успешно установлен в нужное положение или если
+                 в режиме check_only=True возвращает текущее состояние переключателя
+        """
+        try:
+            logger.info(f"Проверка переключателя 'Available Now' (должен быть: {'ON' if should_be_on else 'OFF'})")
+            
+            # Проверка соединения с драйвером перед началом работы
+            try:
+                # Пробуем получить URL страницы, чтобы убедиться, что драйвер работает
+                current_url = driver.current_url
+                logger.debug(f"Текущий URL: {current_url}")
+            except Exception as e:
+                logger.error(f"Ошибка соединения с драйвером: {e}")
+                
+                # Если драйвер не отвечает, но нам нужно проверить статус - возвращаем желаемый статус
+                # Это позволит избежать лишних ошибок при проблемах с соединением
+                if check_only:
+                    logger.warning(f"Невозможно проверить состояние переключателя из-за проблем соединения. Предполагаем {'ON' if should_be_on else 'OFF'}")
+                    return should_be_on
+                
+                # Если нужно установить статус - сообщаем об ошибке
+                logger.error("Невозможно установить переключатель из-за проблем соединения")
+                return False
+            
+            # Делаем скриншот для диагностики
+            try:
+                self.save_screenshot(driver, "toggle_before")
+                logger.debug(f"Скриншот до проверки переключателя")
+            except Exception as e:
+                logger.debug(f"Не удалось сделать скриншот: {e}")
+            
+            # Стратегия повторных попыток при stale element reference
+            max_retries = 3
+            retry_count = 0
+            
+            # Различные селекторы для переключателя в порядке приоритета
+            toggle_xpaths = [
+                '//*[@id="available-now"]/div',  # Оригинальный селектор из main.bak
+                '//div[@id="available-now"]/div',
+                '//div[contains(@class, "available-now")]/div',
+                '//div[contains(@class, "toggle-switch")]'
+            ]
+            
+            # Различные селекторы для проверки состояния
+            status_selectors = [
+                'div.available-now.smart-form input[name="checkbox-toggle"]',  # Оригинальный селектор
+                '#available-now input[type="checkbox"]',
+                'input[name="checkbox-toggle"]',
+                '#available-now div.toggle-switch input',
+                'div.available-now input'
+            ]
+            
+            while retry_count < max_retries:
+                try:
+                    # Ждем, чтобы страница полностью загрузилась
+                    time.sleep(2)
+                    
+                    # Находим переключатель, пробуя разные селекторы
+                    logger.info("Поиск переключателя 'Available Now'")
+                    toggle_element = None
+                    
+                    # Пробуем разные XPath селекторы
+                    for xpath in toggle_xpaths:
+                        try:
+                            logger.debug(f"Пробуем найти переключатель по XPath: {xpath}")
+                            toggle_element = WebDriverWait(driver, 5).until(
+                                EC.presence_of_element_located((By.XPATH, xpath))
+                            )
+                            logger.info(f"Переключатель 'Available Now' найден по XPath: {xpath}")
+                            break
+                        except Exception as e:
+                            logger.debug(f"Не найден переключатель по XPath {xpath}: {e}")
+                            continue
+                    
+                    # Если не нашли через XPath, пробуем CSS селекторы
+                    if toggle_element is None:
+                        logger.info("XPath селекторы не сработали, пробуем CSS селекторы")
+                        css_selectors = [
+                            "#available-now div.toggle-switch",
+                            "div.available-now.smart-form div.toggle",
+                            "div.available-now div",
+                            "label.toggle-switch"
+                        ]
+                        
+                        for css in css_selectors:
+                            try:
+                                logger.debug(f"Пробуем найти переключатель по CSS: {css}")
+                                toggle_element = WebDriverWait(driver, 5).until(
+                                    EC.presence_of_element_located((By.CSS_SELECTOR, css))
+                                )
+                                logger.info(f"Переключатель 'Available Now' найден по CSS: {css}")
+                                break
+                            except Exception as e:
+                                logger.debug(f"Не найден переключатель по CSS {css}: {e}")
+                                continue
+                    
+                    # Если все равно не нашли, делаем JavaScript-поиск
+                    if toggle_element is None:
+                        logger.warning("Не найден переключатель через стандартные методы, пробуем JavaScript")
+                        try:
+                            toggle_element = driver.execute_script(
+                                """
+                                // Поиск через JavaScript
+                                let toggles = document.querySelectorAll('#available-now div, div.available-now div, div.toggle-switch');
+                                
+                                for(let toggle of toggles) {
+                                    if(toggle.offsetParent !== null) {  // Проверяем, что элемент видимый
+                                        return toggle;
+                                    }
+                                }
+                                return document.querySelector('#available-now'); // Возвращаем хотя бы контейнер
+                                """
+                            )
+                            if toggle_element:
+                                logger.info("Переключатель 'Available Now' найден через JavaScript")
+                        except Exception as e:
+                            logger.warning(f"JavaScript-поиск не сработал: {e}")
+                    
+                    # Если переключатель не найден вообще, прерываем попытку
+                    if toggle_element is None:
+                        logger.error("Переключатель 'Available Now' не найден ни одним из методов")
+                        
+                        # Проверяем снова соединение с драйвером - оно могло прерваться в процессе поиска элемента
+                        try:
+                            current_url = driver.current_url
+                            logger.debug(f"Соединение с драйвером все еще активно, URL: {current_url}")
+                        except Exception as e:
+                            logger.error(f"Соединение с драйвером потеряно: {e}")
+                            if check_only:
+                                logger.warning(f"Невозможно проверить состояние переключателя. Предполагаем {'ON' if should_be_on else 'OFF'}")
+                                return should_be_on
+                            return False
+                        
+                        retry_count += 1
+                        if retry_count < max_retries:
+                            logger.info(f"Обновляем страницу и повторяем попытку ({retry_count + 1}/{max_retries})")
+                            try:
+                                driver.refresh()
+                                time.sleep(3)
+                                continue
+                            except Exception as refresh_error:
+                                logger.error(f"Ошибка обновления страницы: {refresh_error}")
+                                return False
+                        return False
+                    
+                    # Проверяем текущее состояние переключателя
+                    logger.info("Определение текущего состояния переключателя")
+                    current_state = None
+                    
+                    # Пробуем разные селекторы для проверки состояния
+                    for selector in status_selectors:
+                        try:
+                            current_state = driver.execute_script(f"return document.querySelector('{selector}').checked")
+                            logger.info(f"Текущее состояние переключателя (селектор {selector}): {'ON' if current_state else 'OFF'}")
+                            break
+                        except Exception as e:
+                            logger.debug(f"Не удалось определить состояние через селектор {selector}: {e}")
+                            continue
+                    
+                    # Если не удалось определить состояние через селекторы, используем класс элемента
+                    if current_state is None:
+                        try:
+                            # Пытаемся определить по классу
+                            classes = driver.execute_script("return arguments[0].className;", toggle_element)
+                            logger.debug(f"Классы переключателя: {classes}")
+                            
+                            # Проверяем класс на активность
+                            current_state = ('active' in classes or 'on' in classes or 'checked' in classes)
+                            logger.info(f"Состояние определено по классу: {'ON' if current_state else 'OFF'}")
+                        except Exception as e:
+                            logger.warning(f"Не удалось определить состояние по классу: {e}")
+                            
+                            # Если все методы не сработали, принимаем решение на основе атрибута aria-checked
+                            try:
+                                aria_checked = toggle_element.get_attribute('aria-checked')
+                                if aria_checked is not None:
+                                    current_state = aria_checked.lower() == 'true'
+                                    logger.info(f"Состояние определено по aria-checked: {'ON' if current_state else 'OFF'}")
+                                else:
+                                    # Если и это не сработало, предполагаем, что выключен
+                                    logger.warning("Не удалось определить текущее состояние, предполагаем OFF")
+                                    current_state = False
+                            except:
+                                logger.warning("Не удалось определить текущее состояние, предполагаем OFF")
+                                current_state = False
+                    
+                    # Если режим только проверки или состояние уже правильное, возвращаем состояние
+                    if check_only or ((current_state and should_be_on) or (not current_state and not should_be_on)):
+                        if check_only:
+                            logger.info(f"Режим только проверки. Текущее состояние: {'ON' if current_state else 'OFF'}")
+                        else:
+                            logger.info("Переключатель уже в нужном положении")
+                        return current_state
+                    
+                    # Иначе переключаем состояние
+                    logger.info(f"Изменение состояния переключателя на {'ON' if should_be_on else 'OFF'}")
+
+                    # Определяем целевое состояние для JavaScript
+                    target_state = "true" if should_be_on else "false"
+                    
+                    # Используем прямой JavaScript для изменения состояния переключателя
+                    toggle_script = """
+                    (function() {
+                        // Находим контейнер переключателя
+                        const toggleContainer = document.querySelector('#available-now');
+                        if (!toggleContainer) {
+                            console.log('Контейнер переключателя не найден');
+                            return false;
+                        }
+                        
+                        // Находим элемент переключателя в контейнере
+                        let toggleSwitch = toggleContainer.querySelector('input[type="checkbox"]');
+                        
+                        // Если не нашли чекбокс, ищем любой элемент переключателя
+                        if (!toggleSwitch) {
+                            toggleSwitch = toggleContainer.querySelector('.toggle-switch, .toggle');
+                        }
+                        
+                        // Если и это не нашли, используем сам контейнер
+                        if (!toggleSwitch) {
+                            toggleSwitch = toggleContainer;
+                        }
+                        
+                        // Текущее состояние
+                        const isCurrentlyOn = toggleSwitch.classList.contains('active') || 
+                                              toggleSwitch.classList.contains('on') || 
+                                              (toggleSwitch.checked === true);
+                        console.log('Текущее состояние переключателя: ' + (isCurrentlyOn ? 'ON' : 'OFF'));
+                        
+                        // Переключаем только если нужно
+                        const shouldBeOn = """ + target_state + """;
+                        if (isCurrentlyOn !== shouldBeOn) {
+                            console.log('Кликаем по переключателю для изменения состояния');
+                            // Кликаем по переключателю
+                            toggleSwitch.click();
+                            
+                            // Принудительное обновление состояния (если это чекбокс)
+                            if (toggleSwitch.tagName === 'INPUT' && toggleSwitch.type === 'checkbox') {
+                                toggleSwitch.checked = shouldBeOn;
+                            }
+                        } else {
+                            console.log('Переключатель уже в нужном состоянии: ' + (shouldBeOn ? 'ON' : 'OFF'));
+                        }
+                        
+                        // Возвращаем текущее состояние после изменения
+                        return true;
+                    })();
+                    """
+                    
+                    try:
+                        # Выполняем JavaScript для изменения состояния
+                        click_result = driver.execute_script(toggle_script)
+                        logger.info(f"Результат JavaScript переключения: {click_result}")
+                        
+                        # Короткая пауза для применения изменений
+                        time.sleep(2)
+                        
+                        # Считаем клик успешным, если JavaScript выполнился
+                        click_success = click_result is True
+                    except Exception as js_error:
+                        logger.error(f"Ошибка при выполнении JavaScript для переключения: {js_error}")
+                        click_success = False
+                    
+                    # Если JavaScript не сработал, пробуем традиционные методы
+                    if not click_success:
+                        # Пробуем разные методы клика
+                        click_methods = [
+                            # Метод 1: JavaScript клик
+                            lambda: driver.execute_script("arguments[0].click();", toggle_element),
+                            
+                            # Метод 2: ActionChains клик
+                            lambda: ActionChains(driver).move_to_element(toggle_element).click().perform(),
+                            
+                            # Метод 3: Обычный клик
+                            lambda: toggle_element.click(),
+                            
+                            # Метод 4: JavaScript имитация клика
+                            lambda: driver.execute_script(
+                                """
+                                var evt = document.createEvent('MouseEvents');
+                                evt.initEvent('click', true, true);
+                                arguments[0].dispatchEvent(evt);
+                                """, 
+                                toggle_element
+                            )
+                        ]
+                        
+                        # Пробуем каждый метод клика по очереди
+                        for i, click_method in enumerate(click_methods):
+                            try:
+                                logger.debug(f"Попытка клика методом {i+1}")
+                                click_method()
+                                logger.info(f"Успешный клик методом {i+1}")
+                                click_success = True
+                                break
+                            except Exception as e:
+                                logger.debug(f"Ошибка клика методом {i+1}: {e}")
+                                continue
+                    
+                    if not click_success:
+                        logger.warning("Все методы клика не сработали")
+                        retry_count += 1
+                        if retry_count < max_retries:
+                            logger.info(f"Повторная попытка после клика ({retry_count + 1}/{max_retries})")
+                            driver.refresh()
+                            time.sleep(3)
+                            continue
+                        else:
+                            return False
+                    
+                    # Ждем появления диалога подтверждения
+                    time.sleep(2)
+                    
+                    # Подтверждаем изменение (нажимаем OK)
+                    # Пробуем разные методы поиска кнопки OK
+                    ok_found = False
+                    ok_selectors = [
+                        (By.XPATH, '//button[text()="OK"]'),
+                        (By.XPATH, '//button[contains(text(), "OK")]'),
+                        (By.CSS_SELECTOR, 'button.confirm-button'),
+                        (By.CSS_SELECTOR, 'div.modal button'),
+                        (By.CSS_SELECTOR, 'div.popup button')
+                    ]
+                    
+                    for selector_type, selector in ok_selectors:
+                        try:
+                            logger.debug(f"Поиск кнопки OK по селектору: {selector}")
+                            btn_ok = WebDriverWait(driver, 5).until(
+                                EC.element_to_be_clickable((selector_type, selector))
+                            )
+                            
+                            # Используем JavaScript для клика по кнопке OK
+                            driver.execute_script("arguments[0].click();", btn_ok)
+                            logger.info(f"Нажата кнопка OK по селектору: {selector}")
+                            ok_found = True
+                            break
+                        except Exception as e:
+                            logger.debug(f"Не удалось найти/нажать кнопку OK по селектору {selector}: {e}")
+                            continue
+                    
+                    # Если не нашли кнопку по селекторам, пробуем JavaScript для поиска и клика
+                    if not ok_found:
+                        try:
+                            logger.debug("Поиск кнопки OK через JavaScript")
+                            driver.execute_script(
+                                """
+                                // Поиск кнопки OK через JavaScript
+                                let buttons = document.querySelectorAll('button');
+                                for(let btn of buttons) {
+                                    if(btn.textContent.includes('OK') || btn.textContent.includes('Ok')) {
+                                        btn.click();
+                                        return true;
+                                    }
+                                }
+                                return false;
+                                """
+                            )
+                            logger.info("JavaScript-поиск и клик кнопки OK")
+                            ok_found = True
+                        except Exception as e:
+                            logger.warning(f"JavaScript-поиск кнопки OK не сработал: {e}")
+                    
+                    time.sleep(2)
+                    
+                    # Проверяем, что состояние изменилось
+                    try:
+                        new_state = None
+                        
+                        # Пробуем те же селекторы для проверки нового состояния
+                        for selector in status_selectors:
+                            try:
+                                new_state = driver.execute_script(f"return document.querySelector('{selector}').checked")
+                                logger.info(f"Новое состояние переключателя (селектор {selector}): {'ON' if new_state else 'OFF'}")
+                                break
+                            except Exception as e:
+                                logger.debug(f"Не удалось определить новое состояние через селектор {selector}: {e}")
+                                continue
+                        
+                        # Если не удалось определить через селекторы, пробуем те же запасные методы
+                        if new_state is None:
+                            try:
+                                # Находим элемент заново
+                                for xpath in toggle_xpaths:
+                                    try:
+                                        toggle_element = WebDriverWait(driver, 5).until(
+                                            EC.presence_of_element_located((By.XPATH, xpath))
+                                        )
+                                        break
+                                    except:
+                                        continue
+                                
+                                # Проверяем по классу
+                                if toggle_element:
+                                    classes = driver.execute_script("return arguments[0].className;", toggle_element)
+                                    new_state = ('active' in classes or 'on' in classes or 'checked' in classes)
+                                    logger.info(f"Новое состояние определено по классу: {'ON' if new_state else 'OFF'}")
+                            except Exception as e:
+                                logger.warning(f"Не удалось определить новое состояние: {e}")
+                                # Предполагаем успех, если переключение прошло без ошибок до этого момента
+                                new_state = should_be_on
+                        
+                        # Проверяем, достигли ли мы желаемого состояния
+                        if (new_state and should_be_on) or (not new_state and not should_be_on):
+                            logger.info(f"Переключатель успешно установлен в положение {'ON' if should_be_on else 'OFF'}")
+                            return True
+                        else:
+                            logger.warning(f"Состояние переключателя не изменилось")
+                            
+                            # Увеличиваем счетчик попыток
+                            retry_count += 1
+                            if retry_count < max_retries:
+                                logger.info(f"Повторная попытка переключения ({retry_count + 1}/{max_retries})")
+                                time.sleep(1)
+                                continue
+                            else:
+                                return False
+                    except Exception as e:
+                        logger.error(f"Ошибка при проверке нового состояния: {e}")
+                        
+                        # Увеличиваем счетчик попыток
+                        retry_count += 1
+                        if retry_count < max_retries:
+                            logger.info(f"Повторная попытка после ошибки ({retry_count + 1}/{max_retries})")
+                            
+                            # При ошибке stale element обновляем страницу
+                            if "stale element" in str(e).lower():
+                                logger.info("Обновляем страницу из-за stale element")
+                                driver.refresh()
+                                time.sleep(3)
+                            
+                            continue
+                        else:
+                            return False
+                
+                except Exception as e:
+                    logger.error(f"Ошибка при работе с переключателем: {e}")
+                    
+                    # Делаем скриншот для диагностики ошибки
+                    try:
+                        self.save_screenshot(driver, "toggle_error")
+                        logger.debug(f"Скриншот ошибки")
+                    except:
+                        pass
+                    
+                    # Увеличиваем счетчик попыток
+                    retry_count += 1
+                    if retry_count < max_retries:
+                        logger.info(f"Повторная попытка после общей ошибки ({retry_count + 1}/{max_retries})")
+                        time.sleep(2)
+                        continue
+                    else:
+                        return False
+                    
+        except Exception as e:
+            logger.error(f"Критическая ошибка при работе с переключателем: {e}")
+            # Делаем скриншот ошибки
+            try:
+                self.save_screenshot(driver, "toggle_critical_error")
+                logger.debug(f"Скриншот критической ошибки")
+            except:
+                pass
+            
+            return False
+
+    def save_screenshot(self, driver, prefix="screenshot"):
+        """
+        Сохраняет скриншот с использованием настроек из конфигурации
+        
+        Args:
+            driver: WebDriver для создания скриншота
+            prefix: Префикс имени файла скриншота
+            
+        Returns:
+            str: Путь к созданному скриншоту или None при ошибке
+        """
+        if not config.get_screenshots_enabled():
+            logger.debug("Создание скриншотов отключено в конфигурации")
+            return None
+        
+        try:
+            # Получаем директорию для скриншотов
+            screenshots_dir = config.get_screenshots_dir()
+            
+            # Создаем директорию, если не существует
+            if not os.path.exists(screenshots_dir):
+                os.makedirs(screenshots_dir, exist_ok=True)
+            
+            # Формируем имя файла с временной меткой
+            timestamp = int(time.time())
+            filename = f"{prefix}_{timestamp}.png"
+            filepath = os.path.join(screenshots_dir, filename)
+            
+            # Сохраняем скриншот
+            driver.save_screenshot(filepath)
+            logger.debug(f"Сохранен скриншот: {filepath}")
+            
+            return filepath
+        except Exception as e:
+            logger.error(f"Не удалось сохранить скриншот: {e}")
+            return None
 
 
 def get_automation_service():

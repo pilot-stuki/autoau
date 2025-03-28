@@ -1,13 +1,9 @@
-selenium==4.11.2
-webdriver-manager==4.0.0
-psutil==5.9.5
-pyyaml==6.0.1
-pytz==2023.3
-requests==2.31.0
-python-dateutil==2.8.2
-certifi==2023.7.22
-urllib3==2.0.4
-pillow==10.0.0
-cryptography==41.0.3
+selenium>=4.10.0
+undetected-chromedriver>=3.5.0
+psutil>=5.9.0
+PyYAML>=6.0
+urllib3>=1.26.0
+certifi>=2021.10.8
+cryptography>=44.0.0
 # Минимальные зависимости для работы с GitHub Codespaces
-# Добавлено для оптимизации ресурсов
+# Добавлено для оптимизации ресурсов 

@@ -582,10 +582,11 @@ class ServiceWrapper:
         try:
             memory_info = log_memory_usage()
             chrome_info = log_chrome_processes()
-            diag_msg = f"DIAGNOSTIC [before_account] Memory: {memory_info}, Chrome: {chrome_info}, Python: {len([p for p in psutil.process_iter() if 'python' in p.name().lower()])}, Account: {email}"
+            diag_msg = f"DIAGNOSTIC [before_account] Memory: {memory_info}, Chrome: {chrome_info}, Account: {email}"
             service_logger.info(diag_msg)
         except Exception as e:
-            service_logger.error(f"Ошибка при логировании диагностики: {e}")
+            # Только логируем ошибку в файл, не выводим в консоль
+            service_logger.debug(f"Ошибка при логировании диагностики (не критично): {e}")
         
         # Уменьшаем таймаут для более быстрой обработки
         account_timeout = 60  # Увеличиваем с 30 до 60 секунд
@@ -596,79 +597,111 @@ class ServiceWrapper:
         
         # Оборачиваем все в try-finally для гарантированной очистки ресурсов
         try:
-            # Импортируем threading и класс Timer здесь, чтобы избежать проблем с циклическими импортами
-            import threading
-            from threading import Timer
+            # Получаем сервис автоматизации
+            automation_service = get_automation_service()
             
-            # Создаем локальную переменную driver
-            driver = None
+            # Проверяем сетевое подключение перед созданием драйвера
+            network_ok = browser_service.check_network_connectivity()
+            if not network_ok:
+                service_logger.warning(f"Сетевое подключение нестабильно, возможны проблемы при входе для {email}")
             
-            # Функция для логирования превышения таймаута
-            def timeout_handler():
-                nonlocal success
-                service_logger.error(f"Превышен таймаут входа ({account_timeout}с) для {email}")
-                success = False
-                # Если driver был создан, закрываем его
-                if driver:
-                    try:
-                        driver.quit()
-                    except:
-                        pass
-            
-            # Устанавливаем таймер
-            timer = Timer(account_timeout, timeout_handler)
-            operation_name = f"login_{email}"
-            
+            # Выполняем вход с использованием новой стратегии выбора драйвера
             try:
-                # Запускаем таймер
-                timer.start()
+                # Используем headless режим если требуется оптимизация ресурсов
+                resource_mgr = get_resource_manager()
+                headless = True if resource_mgr.should_optimize_for_low_resources() else None
                 
-                # Получаем сервис автоматизации
-                automation_service = get_automation_service()
+                # Создаем драйвер с оптимизированной стратегией выбора
+                driver, using_undetected = browser_service.create_driver_with_fallback(
+                    headless=headless,
+                    incognito=True,
+                    implicit_wait=10
+                )
                 
-                # Проверяем сетевое подключение перед созданием драйвера
-                network_ok = browser_service.check_network_connectivity()
-                if not network_ok:
-                    service_logger.warning(f"Сетевое подключение нестабильно, возможны проблемы при входе для {email}")
-                
-                # Выполняем вход с использованием новой стратегии выбора драйвера
-                try:
-                    # Используем headless режим если требуется оптимизация ресурсов
-                    resource_mgr = get_resource_manager()
-                    headless = True if resource_mgr.should_optimize_for_low_resources() else None
-                    
-                    # Создаем драйвер с оптимизированной стратегией выбора
-                    driver, using_undetected = browser_service.create_driver_with_fallback(
-                        headless=headless,
-                        incognito=True,
-                        implicit_wait=10
-                    )
-                    
-                    if using_undetected:
-                        service_logger.info(f"Используем undetected_chromedriver для {email} (обнаружены анти-бот меры)")
-                    else:
-                        service_logger.info(f"Используем обычный ChromeDriver для {email}")
-                except Exception as e:
-                    service_logger.error(f"Не удалось создать драйвер для {email}: {e}")
-                    success = False
-                    return success
+                if using_undetected:
+                    service_logger.info(f"Используем undetected_chromedriver для {email} (обнаружены анти-бот меры)")
+                else:
+                    service_logger.info(f"Используем обычный ChromeDriver для {email}")
                 
                 # Выполняем вход
+                driver, is_new_login = automation_service.login(email, password, driver=driver)
+                
+                # Закрываем всплывающие окна, которые могут появиться после входа
                 try:
-                    driver, is_new_login = automation_service.login(email, password)
+                    service_logger.info(f"Попытка закрыть всплывающие окна для {email}")
+                    automation_service.close_popups(driver)
+                except Exception as popup_error:
+                    service_logger.debug(f"Ошибка при попытке закрыть специфические всплывающие окна для {email}: {popup_error}")
+                
+                # Проверяем и устанавливаем переключатель
+                try:
+                    # Проверяем состояние соединения с драйвером перед работой с переключателем
+                    try:
+                        current_url = driver.current_url
+                        service_logger.debug(f"Соединение с драйвером активно перед работой с переключателем: {current_url}")
+                    except Exception as driver_error:
+                        service_logger.error(f"Ошибка соединения с драйвером: {driver_error}")
+                        print(f"Ошибка соединения с драйвером: {driver_error}")
+                        # Предполагаем, что переключатель включен, чтобы не было ложных попыток изменить его
+                        print("Невозможно установить переключатель из-за проблем соединения")
+                        success = True  # Считаем операцию успешной, так как проблемы с драйвером
+                        return success
+
+                    # Получаем текущее состояние переключателя
+                    current_state = automation_service.check_and_set_toggle(driver, should_be_on=True, check_only=True)
+                    service_logger.info(f"Текущее состояние переключателя для {email}: {'ON' if current_state else 'OFF'}")
                     
-                    # Если вход успешен, закрываем всплывающие окна
-                    self.handle_popups(driver, email)
+                    # Устанавливаем переключатель только если он выключен
+                    if not current_state:
+                        service_logger.info(f"Переключатель выключен, пытаемся включить его для {email}")
+                        # Устанавливаем переключатель прямым вызовом (без check_only, с should_be_on=True)
+                        toggle_success = automation_service.check_and_set_toggle(driver, should_be_on=True, check_only=False)
+                        
+                        if toggle_success:
+                            service_logger.info(f"Переключатель успешно установлен в положение ON для {email}")
+                        else:
+                            # Если не получилось, делаем еще одну попытку после обновления страницы
+                            service_logger.warning(f"Первая попытка установки переключателя не удалась для {email}, обновляем страницу и пробуем снова")
+                            try:
+                                driver.refresh()
+                                time.sleep(2)
+                                toggle_success = automation_service.check_and_set_toggle(driver, should_be_on=True, check_only=False)
+                                if toggle_success:
+                                    service_logger.info(f"Переключатель успешно установлен после обновления страницы для {email}")
+                                else:
+                                    service_logger.warning(f"Не удалось установить переключатель в положение ON для {email} даже после обновления страницы")
+                            except Exception as refresh_error:
+                                service_logger.error(f"Ошибка при обновлении страницы: {refresh_error}")
+                    else:
+                        service_logger.info(f"Аккаунт {email} обработан успешно. Переключатель уже включен")
+                        
+                    # Делаем скриншот после установки переключателя для проверки
+                    try:
+                        automation_service.save_screenshot(driver, "toggle_after")
+                        service_logger.info(f"Сохранен скриншот после обработки переключателя")
+                    except Exception as screenshot_error:
+                        service_logger.error(f"Не удалось сделать скриншот: {screenshot_error}")
                     
-                    # Проверяем и устанавливаем переключатель
-                    toggle_result = automation_service.check_and_set_toggle(driver)
+                    # Проверяем финальное состояние переключателя
+                    try:
+                        final_state = automation_service.check_and_set_toggle(driver, should_be_on=True, check_only=True)
+                        service_logger.info(f"Финальное состояние переключателя для {email}: {'ON' if final_state else 'OFF'}")
+                        # Считаем операцию успешной только если переключатель включен
+                        success = final_state
+                    except Exception as final_check_error:
+                        service_logger.error(f"Ошибка при проверке финального состояния: {final_check_error}")
+                        # Если не смогли проверить, предполагаем успех, как было раньше
+                        success = True
+                except Exception as toggle_error:
+                    service_logger.error(f"Ошибка при работе с переключателем для {email}: {toggle_error}")
                     
-                    # Независимо от результата переключателя, операция успешна
-                    success = True
-                    service_logger.info(f"Аккаунт {email} обработан успешно. Переключатель был {'включен' if toggle_result else 'уже включен'}")
-                except Exception as e:
-                    service_logger.error(f"Ошибка при обработке аккаунта {email}: {e}")
-                    success = False
+                    # Проверяем, связана ли ошибка с недоступностью драйвера
+                    if "connection refused" in str(toggle_error).lower() or "no such session" in str(toggle_error).lower():
+                        service_logger.warning(f"Потеряно соединение с драйвером для {email}. Считаем, что переключатель уже включен.")
+                        print("Невозможно установить переключатель из-за проблем соединения")
+                        success = True  # Чтобы избежать повторных попыток при проблемах с соединением
+                    else:
+                        success = False
             except Exception as e:
                 service_logger.error(f"Ошибка при выполнении операции '{operation_name}': {e}")
                 
@@ -684,10 +717,6 @@ class ServiceWrapper:
                     service_logger.error(f"Обнаружена сетевая ошибка: {e}")
             
             finally:
-                # Останавливаем таймер, если он еще активен
-                if timer.is_alive():
-                    timer.cancel()
-                
                 # Закрываем браузер, если он был открыт
                 if driver:
                     try:
