@@ -275,8 +275,6 @@ class BrowserService:
         options.add_experimental_option("excludeSwitches", ["enable-automation"])
         options.add_experimental_option('useAutomationExtension', False)
         options.add_argument('--disable-blink-features=AutomationControlled')
-        # Force compatibility with ChromeDriver 123
-        options.add_argument('--chrome-version=123')
         
         # User agent
         options.add_argument('--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/90.0.4430.212 Safari/537.36')
@@ -723,8 +721,7 @@ class BrowserService:
                         # Создаем драйвер с обработкой временных сетевых ошибок
                         driver = uc_webdriver.Chrome(
                             options=options,
-                            use_subprocess=True,
-                            version_main=123
+                            use_subprocess=True
                         )
                         
                         # Отслеживаем созданный драйвер для последующей очистки

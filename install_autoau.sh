@@ -1,7 +1,8 @@
 #!/bin/bash
 # install_autoau.sh - Installation script for AutoAU service
 # This script sets up the AutoAU application with a Python virtual environment
-# using a newer Python version (3.9) alongside the system Python 3.6
+# using a newer Python version (3.10) alongside the system Python 3.6
+# and properly configures Chrome 123 and ChromeDriver
 
 # Exit on any error
 set -e
@@ -10,13 +11,14 @@ set -e
 APP_DIR="/opt/autoau"                    # Application installation directory
 SERVICE_NAME="autoau"                    # Service name
 SERVICE_USER="autoau"                    # User to run the service
-PYTHON_VERSION="3.10.13"                 # Python version to install (using a more stable version)
+PYTHON_VERSION="3.10.13"                 # Python version to install
 PYENV_ROOT="$APP_DIR/.pyenv"             # pyenv installation directory
 PYTHON_PATH="$PYENV_ROOT/versions/$PYTHON_VERSION/bin/python"  # Path to newer Python
 VENV_DIR="$APP_DIR/venv"                 # Virtual environment directory
 LOG_DIR="$APP_DIR/logs"                  # Log directory
 SESSION_DIR="$APP_DIR/sessions"          # Session directory
 PROJECT_SOURCE="/home/opc/autoau"        # Source folder - CHANGE THIS if needed
+TEMP_DIR=$(mktemp -d)                    # Temporary directory for downloads
 
 # Color definitions for output
 GREEN='\033[0;32m'
@@ -36,6 +38,13 @@ log_warning() {
 log_error() {
     echo -e "${RED}[ERROR]${NC} $1"
 }
+
+# Clean up temporary files on exit
+cleanup() {
+    log_message "Cleaning up temporary files..."
+    rm -rf "$TEMP_DIR"
+}
+trap cleanup EXIT
 
 # Check if running as root
 if [ "$EUID" -ne 0 ]; then
@@ -169,7 +178,133 @@ log_message "Creating log, session, and driver directories..."
 mkdir -p "$LOG_DIR" "$SESSION_DIR" "$APP_DIR/drivers"
 chown -R "$SERVICE_USER:$SERVICE_USER" "$LOG_DIR" "$SESSION_DIR" "$APP_DIR/drivers"
 
-# Check if ChromeDriver is already installed
+# Install Chrome 123
+log_message "Setting up Chrome version 123..."
+
+# Find Chrome 123 RPM in /home/opc directory
+CHROME_RPM_PATH=$(find /home/opc -name "google-chrome-stable-123*.rpm" 2>/dev/null | head -1)
+
+if [ -f "$CHROME_RPM_PATH" ]; then
+    log_message "Found Chrome 123 RPM at $CHROME_RPM_PATH"
+    
+    # First check if Chrome is already installed
+    if command -v google-chrome &> /dev/null; then
+        CURRENT_VERSION=$(google-chrome --version | grep -oP "Chrome \K[0-9]+")
+        log_message "Current Chrome version: $CURRENT_VERSION"
+        
+        if [ "$CURRENT_VERSION" = "123" ]; then
+            log_message "Chrome 123 is already installed"
+        else
+            log_message "Removing existing Chrome version $CURRENT_VERSION..."
+            yum remove -y google-chrome-stable
+            
+            log_message "Installing Chrome 123 from RPM..."
+            yum install -y "$CHROME_RPM_PATH"
+        fi
+    else
+        log_message "Installing Chrome 123 from RPM..."
+        yum install -y "$CHROME_RPM_PATH"
+    fi
+    
+    # Verify installation and /opt/google/chrome path
+    if command -v google-chrome &> /dev/null; then
+        CHROME_VERSION=$(google-chrome --version)
+        log_message "Chrome installed: $CHROME_VERSION"
+        
+        # Check if Chrome is in the expected location
+        if [ -d "/opt/google/chrome" ]; then
+            log_message "Chrome 123 installed correctly to /opt/google/chrome"
+        else
+            log_warning "Chrome not found in /opt/google/chrome"
+            
+            # Find where Chrome is actually installed
+            CHROME_EXEC=$(which google-chrome)
+            CHROME_DIR=$(dirname "$CHROME_EXEC")
+            
+            log_message "Chrome found at $CHROME_EXEC"
+            log_message "Creating directory and symlinks for /opt/google/chrome"
+            
+            # Create /opt/google/chrome structure
+            mkdir -p /opt/google
+            
+            # If Chrome is a symlink, get the real path
+            if [ -L "$CHROME_EXEC" ]; then
+                REAL_CHROME=$(readlink -f "$CHROME_EXEC")
+                REAL_CHROME_DIR=$(dirname "$REAL_CHROME")
+                
+                # Create a symlink to the actual chrome directory
+                ln -sf "$(dirname "$REAL_CHROME_DIR")" /opt/google/chrome
+            else
+                # Create a symlink to the chrome executable
+                ln -sf "$CHROME_EXEC" /opt/google/chrome
+            fi
+            
+            log_message "Chrome symlink created: /opt/google/chrome -> $(readlink -f /opt/google/chrome)"
+        fi
+        
+        # Lock Chrome version to prevent updates
+        log_message "Locking Chrome version to prevent updates..."
+        if ! command -v yum-versionlock &> /dev/null; then
+            yum install -y yum-versionlock
+        fi
+        yum versionlock add google-chrome-stable
+        
+        log_message "Preventing Chrome auto-updates via configuration..."
+        mkdir -p /etc/default
+        echo "repo_add_once=false" > /etc/default/google-chrome
+        echo "repo_reenable_on_distupgrade=false" >> /etc/default/google-chrome
+    else
+        log_error "Chrome installation failed"
+    fi
+else
+    log_warning "Chrome 123 RPM not found in /home/opc directory"
+    log_message "Attempting to download Chrome 123 directly..."
+    
+    # Attempt to download Chrome 123 directly
+    CHROME_RPM="$TEMP_DIR/chrome-123.rpm"
+    curl -L -o "$CHROME_RPM" "https://dl.google.com/linux/chrome/rpm/stable/x86_64/google-chrome-stable-123.0.6312.86-1.x86_64.rpm"
+    
+    if [ -f "$CHROME_RPM" ] && [ -s "$CHROME_RPM" ]; then
+        log_message "Downloaded Chrome 123 RPM successfully"
+        yum install -y "$CHROME_RPM"
+        
+        # Verify installation
+        if command -v google-chrome &> /dev/null; then
+            CHROME_VERSION=$(google-chrome --version)
+            log_message "Chrome installed: $CHROME_VERSION"
+            
+            # Check if Chrome is in the expected location
+            if [ ! -d "/opt/google/chrome" ]; then
+                log_warning "Chrome not found in /opt/google/chrome"
+                
+                # Create /opt/google/chrome structure
+                mkdir -p /opt/google
+                ln -sf $(which google-chrome) /opt/google/chrome
+                
+                log_message "Chrome symlink created: /opt/google/chrome -> $(readlink -f /opt/google/chrome)"
+            fi
+            
+            # Lock Chrome version
+            log_message "Locking Chrome version to prevent updates..."
+            if ! command -v yum-versionlock &> /dev/null; then
+                yum install -y yum-versionlock
+            fi
+            yum versionlock add google-chrome-stable
+        else
+            log_error "Chrome installation failed"
+        fi
+    else
+        log_error "Failed to download Chrome 123 RPM"
+        log_error "Please manually download google-chrome-stable-123.0.6312.86-1.x86_64.rpm"
+        log_error "and place it in /home/opc directory, then run this script again."
+        exit 1
+    fi
+fi
+
+# Install ChromeDriver 123
+log_message "Installing ChromeDriver for Chrome 123..."
+
+# Check for existing ChromeDriver
 if [ -f "/home/opc/autoau/drivers/chromedriver" ]; then
     log_message "Found manually installed ChromeDriver, setting it up..."
     # Copy the manually installed ChromeDriver to the application directory
@@ -177,8 +312,41 @@ if [ -f "/home/opc/autoau/drivers/chromedriver" ]; then
     chmod +x "$APP_DIR/drivers/chromedriver"
     chown "$SERVICE_USER:$SERVICE_USER" "$APP_DIR/drivers/chromedriver"
 else
-    log_warning "ChromeDriver not found at /home/opc/autoau/drivers/chromedriver"
-    log_message "You may need to manually install ChromeDriver"
+    log_message "Downloading ChromeDriver 123..."
+    CHROMEDRIVER_URL="https://storage.googleapis.com/chrome-for-testing-public/123.0.6312.86/linux64/chromedriver-linux64.zip"
+    CHROMEDRIVER_ZIP="$TEMP_DIR/chromedriver.zip"
+    
+    curl -L -o "$CHROMEDRIVER_ZIP" "$CHROMEDRIVER_URL"
+    if [ -f "$CHROMEDRIVER_ZIP" ] && [ -s "$CHROMEDRIVER_ZIP" ]; then
+        log_message "Extracting ChromeDriver..."
+        unzip -q "$CHROMEDRIVER_ZIP" -d "$TEMP_DIR"
+        
+        # Find chromedriver binary
+        CHROMEDRIVER_BIN=$(find "$TEMP_DIR" -path "*/chromedriver-linux64/chromedriver" -type f)
+        
+        if [ -n "$CHROMEDRIVER_BIN" ]; then
+            cp "$CHROMEDRIVER_BIN" "$APP_DIR/drivers/chromedriver"
+            chmod +x "$APP_DIR/drivers/chromedriver"
+            chown "$SERVICE_USER:$SERVICE_USER" "$APP_DIR/drivers/chromedriver"
+            log_message "ChromeDriver 123 installed successfully"
+        else
+            log_error "ChromeDriver binary not found in extracted files"
+            log_error "You may need to manually install ChromeDriver"
+        fi
+    else
+        log_error "Failed to download ChromeDriver 123"
+        log_error "You may need to manually install ChromeDriver"
+    fi
+fi
+
+# Verify ChromeDriver installation
+if [ -f "$APP_DIR/drivers/chromedriver" ]; then
+    log_message "Verifying ChromeDriver installation..."
+    CHROMEDRIVER_VERSION=$("$APP_DIR/drivers/chromedriver" --version)
+    log_message "ChromeDriver installed: $CHROMEDRIVER_VERSION"
+else
+    log_error "ChromeDriver not found at $APP_DIR/drivers/chromedriver"
+    log_error "You may need to manually install ChromeDriver"
 fi
 
 # Copy application files to installation directory
@@ -214,6 +382,32 @@ else
     exit 1
 fi
 
+# Add ChromeDriver compatibility to browser_service.py
+log_message "Adding Chrome compatibility settings to browser_service.py..."
+if [ -f "$APP_DIR/browser_service.py" ]; then
+    # Backup the file first
+    cp "$APP_DIR/browser_service.py" "$APP_DIR/browser_service.py.bak"
+    
+    # Add Chrome version compatibility setting to options
+    if ! grep -q "options.add_argument('--chrome-version=123')" "$APP_DIR/browser_service.py"; then
+        sed -i '/options.add_argument.*--disable-blink-features=AutomationControlled/a \        # Force compatibility with ChromeDriver 123\n        options.add_argument("--chrome-version=123")' "$APP_DIR/browser_service.py"
+        log_message "Added Chrome version compatibility setting to browser_service.py"
+    else
+        log_message "Chrome version compatibility setting already exists in browser_service.py"
+    fi
+    
+    # Add version_main parameter to undetected_chromedriver if it exists
+    if grep -q "uc_webdriver.Chrome" "$APP_DIR/browser_service.py" && ! grep -q "version_main=123" "$APP_DIR/browser_service.py"; then
+        sed -i '/driver = uc_webdriver.Chrome(/a \                            version_main=123,' "$APP_DIR/browser_service.py"
+        log_message "Added version_main parameter to undetected_chromedriver in browser_service.py"
+    fi
+    
+    chown "$SERVICE_USER:$SERVICE_USER" "$APP_DIR/browser_service.py"
+    log_message "browser_service.py updated with Chrome 123 compatibility settings"
+else
+    log_warning "browser_service.py not found, skipping compatibility settings"
+fi
+
 # Install dependencies in virtual environment
 log_message "Installing Python dependencies..."
 su -c "$VENV_DIR/bin/pip install -r $APP_DIR/requirements.txt" "$SERVICE_USER"
@@ -246,6 +440,10 @@ mkdir -p "$LOG_DIR"
 
 # Add drivers directory to PATH
 export PATH="$APP_DIR/drivers:$PATH"
+
+# Set environment variables for ChromeDriver compatibility
+export SELENIUM_EXCLUDE_DV_CHECK=true
+export WDM_LOG_LEVEL=0
 
 log() {
     echo "[$(date '+%Y-%m-%d %H:%M:%S')] $1" | tee -a "$CONTROL_LOG"
@@ -297,6 +495,21 @@ start_app() {
     if [ ! -f "$APP_DIR/main.py" ]; then
         log "ERROR: main.py not found at $APP_DIR/main.py"
         exit 1
+    fi
+    
+    # Verify ChromeDriver exists and is compatible
+    if [ -f "$APP_DIR/drivers/chromedriver" ]; then
+        CHROMEDRIVER_VERSION=$("$APP_DIR/drivers/chromedriver" --version | grep -oP "ChromeDriver \K[0-9]+")
+        log "Found ChromeDriver version: $CHROMEDRIVER_VERSION"
+    else
+        log "WARNING: ChromeDriver not found at $APP_DIR/drivers/chromedriver"
+    fi
+    
+    # Verify Chrome exists in expected location
+    if [ -d "/opt/google/chrome" ] || [ -f "/opt/google/chrome" ]; then
+        log "Verified Chrome in /opt/google/chrome"
+    else
+        log "WARNING: Chrome not found in /opt/google/chrome"
     fi
     
     # Move to application directory
@@ -385,6 +598,8 @@ Type=forking
 User=$SERVICE_USER
 WorkingDirectory=$APP_DIR
 Environment="PATH=$APP_DIR/drivers:$PATH"
+Environment="SELENIUM_EXCLUDE_DV_CHECK=true"
+Environment="WDM_LOG_LEVEL=0"
 ExecStart=$APP_DIR/service_control.sh start
 ExecStop=$APP_DIR/service_control.sh stop
 ExecReload=$APP_DIR/service_control.sh restart
@@ -406,36 +621,43 @@ if systemctl is-active --quiet "$SERVICE_NAME.service"; then
     log_message "AutoAU service is now running"
 else
     log_error "Failed to start AutoAU service. Check logs with: journalctl -u $SERVICE_NAME.service"
-    exit 1
+    # Don't exit with error here to allow validation of setup
 fi
 
-# Install Chrome if it's not already installed
-if ! command -v google-chrome &> /dev/null; then
-    log_message "Installing Chrome browser..."
-    
-    # Add Chrome repository
-    cat > /etc/yum.repos.d/google-chrome.repo << EOF
-[google-chrome]
-name=google-chrome
-baseurl=http://dl.google.com/linux/chrome/rpm/stable/x86_64
-enabled=1
-gpgcheck=1
-gpgkey=https://dl.google.com/linux/linux_signing_key.pub
-EOF
+# Perform final validation
+log_message "Performing final validation..."
 
-    # Install Chrome
-    yum install -y google-chrome-stable
+# Verify Chrome installation
+if command -v google-chrome &> /dev/null; then
+    CHROME_VERSION=$(google-chrome --version)
+    log_message "✓ Chrome installed: $CHROME_VERSION"
     
-    if command -v google-chrome &> /dev/null; then
-        log_message "Chrome installed successfully"
+    # Check Chrome location
+    if [ -d "/opt/google/chrome" ] || [ -f "/opt/google/chrome" ]; then
+        log_message "✓ Chrome found in expected location: /opt/google/chrome"
     else
-        log_warning "Chrome installation may have failed. You may need to install it manually."
+        log_warning "✗ Chrome not found in expected location: /opt/google/chrome"
     fi
 else
-    log_message "Chrome is already installed"
+    log_error "✗ Chrome not found in PATH"
 fi
 
-log_message "Installation completed successfully!"
+# Verify ChromeDriver installation
+if [ -f "$APP_DIR/drivers/chromedriver" ]; then
+    CHROMEDRIVER_VERSION=$("$APP_DIR/drivers/chromedriver" --version)
+    log_message "✓ ChromeDriver installed: $CHROMEDRIVER_VERSION"
+else
+    log_error "✗ ChromeDriver not found at $APP_DIR/drivers/chromedriver"
+fi
+
+# Verify service status
+if systemctl is-active --quiet "$SERVICE_NAME.service"; then
+    log_message "✓ AutoAU service is running"
+else
+    log_warning "✗ AutoAU service is not running"
+fi
+
+log_message "Installation completed!"
 log_message "Service name: $SERVICE_NAME"
 log_message "To check status: systemctl status $SERVICE_NAME"
 log_message "To view logs: tail -f $LOG_DIR/autoau_output.log"
