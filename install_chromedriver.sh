@@ -1,185 +1,80 @@
 #!/bin/bash
+# Enhanced install_chromedriver.sh with alternative Chrome download method
+# This script installs Chrome 123 (if needed) and the matching ChromeDriver
 
-# Скрипт для автоматической установки ChromeDriver, соответствующего установленной версии Chrome
+# Exit on errors
+set -e
 
-echo "Установка ChromeDriver..."
+# Configuration
+TARGET_CHROME_VERSION="123.0.6312.86"
+DRIVERS_DIR="${DRIVERS_DIR:-"$PWD/drivers"}"
+TEMP_DIR=$(mktemp -d)
+LOG_FILE="/tmp/chrome_chromedriver_install.log"
 
-# Определение операционной системы
-OS="$(uname -s)"
-case "${OS}" in
-    Linux*)     OS_TYPE=linux;;
-    Darwin*)    OS_TYPE=mac;;
-    MINGW*|CYGWIN*|MSYS*)    OS_TYPE=win;;
-    *)          OS_TYPE="UNKNOWN:${OS}"
-esac
+# Start logging
+exec > >(tee -a "$LOG_FILE") 2>&1
 
-echo "Определена операционная система: ${OS_TYPE}"
+echo "===== Enhanced Chrome/ChromeDriver Installation Script ====="
+echo "Started at: $(date)"
+echo "Target Chrome version: $TARGET_CHROME_VERSION"
+echo "Drivers directory: $DRIVERS_DIR"
 
-# Определение архитектуры процессора
-ARCH="$(uname -m)"
-case "${ARCH}" in
-    x86_64*)    ARCH_TYPE=64;;
-    x86*)       ARCH_TYPE=32;;
-    arm*)       ARCH_TYPE=arm64;;
-    aarch64*)   ARCH_TYPE=arm64;;
-    *)          ARCH_TYPE="UNKNOWN:${ARCH}"
-esac
+# Function to clean up temp files
+cleanup() {
+    echo "Очистка временных файлов..."
+    rm -rf "$TEMP_DIR"
+}
 
-echo "Определена архитектура: ${ARCH_TYPE}"
+# Register cleanup function
+trap cleanup EXIT
 
-# Создание директории для драйверов
-DRIVER_DIR="$(pwd)/drivers"
-mkdir -p "${DRIVER_DIR}"
+# Create drivers directory if it doesn't exist
+mkdir -p "$DRIVERS_DIR"
 
-# Определение версии установленного Chrome
-if [[ "${OS_TYPE}" == "linux" ]]; then
-    if command -v google-chrome &> /dev/null; then
-        CHROME_VERSION=$(google-chrome --version | awk '{print $3}' | cut -d '.' -f 1)
-    elif command -v chromium-browser &> /dev/null; then
-        CHROME_VERSION=$(chromium-browser --version | awk '{print $2}' | cut -d '.' -f 1)
-    else
-        echo "Chrome или Chromium не найден. Установите Chrome или Chromium перед установкой ChromeDriver."
-        exit 1
-    fi
-elif [[ "${OS_TYPE}" == "mac" ]]; then
-    if [ -f "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome" ]; then
-        CHROME_VERSION=$("/Applications/Google Chrome.app/Contents/MacOS/Google Chrome" --version | awk '{print $3}' | cut -d '.' -f 1)
-    else
-        echo "Chrome не найден. Установите Chrome перед установкой ChromeDriver."
-        exit 1
-    fi
-elif [[ "${OS_TYPE}" == "win" ]]; then
-    # В Windows путь к Chrome может отличаться, попробуем несколько вариантов
-    if [ -f "/c/Program Files (x86)/Google/Chrome/Application/chrome.exe" ]; then
-        CHROME_VERSION=$("/c/Program Files (x86)/Google/Chrome/Application/chrome.exe" --version | awk '{print $3}' | cut -d '.' -f 1)
-    elif [ -f "/c/Program Files/Google/Chrome/Application/chrome.exe" ]; then
-        CHROME_VERSION=$("/c/Program Files/Google/Chrome/Application/chrome.exe" --version | awk '{print $3}' | cut -d '.' -f 1)
-    else
-        # В случае, если путь не найден, будем использовать версию по умолчанию
-        CHROME_VERSION=108
-        echo "Не удалось определить версию Chrome. Используем версию по умолчанию: ${CHROME_VERSION}"
-    fi
-else
-    echo "Неподдерживаемая операционная система: ${OS_TYPE}"
-    exit 1
-fi
+# Skip Chrome installation and focus only on ChromeDriver
+echo "ПРИМЕЧАНИЕ: Пропуск установки Chrome, фокусируемся только на установке ChromeDriver версии 123"
+echo "Установка ChromeDriver для Chrome 123..."
 
-echo "Определена версия Chrome: ${CHROME_VERSION}"
+# ChromeDriver 123 URL (specific for version 123)
+CHROMEDRIVER_URL="https://storage.googleapis.com/chrome-for-testing-public/123.0.6312.86/linux64/chromedriver-linux64.zip"
 
-# Определение URL для скачивания ChromeDriver
-if [[ "${CHROME_VERSION}" -ge 115 ]]; then
-    # Начиная с Chrome 115, используется новый формат API и URL
-    # Получаем последнюю версию ChromeDriver для нашей версии Chrome
-    echo "Версия Chrome >= 115, используем новый API для определения версии драйвера"
-    
-    # Для более новых версий Chrome используем фиксированную версию, которая точно работает
-    # В данном случае для Chrome 134 используем ChromeDriver 123.0.6312.86
-    LATEST_DRIVER_VERSION="123.0.6312.86"
-    
-    # Определяем платформу для URL
-    if [[ "${OS_TYPE}" == "mac" ]]; then
-        if [[ "${ARCH_TYPE}" == "arm64" ]]; then
-            PLATFORM="mac-arm64"
-        else
-            PLATFORM="mac-x64"
-        fi
-    elif [[ "${OS_TYPE}" == "linux" ]]; then
-        if [[ "${ARCH_TYPE}" == "arm64" ]]; then
-            PLATFORM="linux-arm64"
-        else
-            PLATFORM="linux64"
-        fi
-    elif [[ "${OS_TYPE}" == "win" ]]; then
-        PLATFORM="win32"
-    fi
-    
-    # Формируем URL для скачивания
-    DRIVER_URL="https://edgedl.me.gvt1.com/edgedl/chrome/chrome-for-testing/${LATEST_DRIVER_VERSION}/${PLATFORM}/chromedriver-${PLATFORM}.zip"
-    
-else
-    # Старый формат URL для Chrome версии до 115
-    LATEST_DRIVER_VERSION=$(curl -s "https://chromedriver.storage.googleapis.com/LATEST_RELEASE_${CHROME_VERSION}")
-    
-    if [[ "${OS_TYPE}" == "linux" ]]; then
-        DRIVER_URL="https://chromedriver.storage.googleapis.com/${LATEST_DRIVER_VERSION}/chromedriver_linux64.zip"
-    elif [[ "${OS_TYPE}" == "mac" ]]; then
-        if [[ "${ARCH_TYPE}" == "64" ]]; then
-            DRIVER_URL="https://chromedriver.storage.googleapis.com/${LATEST_DRIVER_VERSION}/chromedriver_mac64.zip"
-        elif [[ "${ARCH_TYPE}" == "arm64" ]]; then
-            # Для Apple Silicon в Chrome < 115 используем более новый формат
-            DRIVER_URL="https://chromedriver.storage.googleapis.com/${LATEST_DRIVER_VERSION}/chromedriver_mac_arm64.zip"
-            # Если ссылка не существует, используем x64 с Rosetta
-            if ! curl --output /dev/null --silent --head --fail "${DRIVER_URL}"; then
-                echo "ARM64 версия не найдена, используем x64 с Rosetta"
-                DRIVER_URL="https://chromedriver.storage.googleapis.com/${LATEST_DRIVER_VERSION}/chromedriver_mac64.zip"
-            fi
-        fi
-    elif [[ "${OS_TYPE}" == "win" ]]; then
-        DRIVER_URL="https://chromedriver.storage.googleapis.com/${LATEST_DRIVER_VERSION}/chromedriver_win32.zip"
-    fi
-fi
+echo "Скачивание ChromeDriver с: $CHROMEDRIVER_URL"
+curl -L -o "$TEMP_DIR/chromedriver.zip" "$CHROMEDRIVER_URL"
 
-echo "URL для скачивания ChromeDriver: ${DRIVER_URL}"
-
-# Создаем временную директорию для скачивания
-TMP_DIR=$(mktemp -d)
-ARCHIVE_PATH="${TMP_DIR}/chromedriver.zip"
-
-# Скачиваем архив
-echo "Скачивание ChromeDriver..."
-if command -v curl &> /dev/null; then
-    curl -L "${DRIVER_URL}" -o "${ARCHIVE_PATH}"
-elif command -v wget &> /dev/null; then
-    wget "${DRIVER_URL}" -O "${ARCHIVE_PATH}"
-else
-    echo "Не найдены curl или wget. Установите одну из этих утилит для скачивания файлов."
-    exit 1
-fi
-
-# Распаковываем архив
 echo "Распаковка ChromeDriver..."
-if command -v unzip &> /dev/null; then
-    unzip -o "${ARCHIVE_PATH}" -d "${TMP_DIR}"
-else
-    echo "Не найден unzip. Установите unzip для распаковки файлов."
+unzip -q "$TEMP_DIR/chromedriver.zip" -d "$TEMP_DIR"
+
+# Find chromedriver binary - handle different folder structures
+CHROMEDRIVER_BIN=$(find "$TEMP_DIR" -path "*/chromedriver-linux64/chromedriver" -type f)
+
+if [ -z "$CHROMEDRIVER_BIN" ]; then
+    echo "ОШИБКА: chromedriver не найден в скачанном архиве"
+    find "$TEMP_DIR" -type f
     exit 1
 fi
 
-# Копируем драйвер в директорию драйверов
-if [[ "${OS_TYPE}" == "win" ]]; then
-    # Для Chrome >= 115 структура архива изменилась, драйвер находится в подкаталоге
-    if [[ "${CHROME_VERSION}" -ge 115 ]]; then
-        if [ -f "${TMP_DIR}/chromedriver-${PLATFORM}/chromedriver.exe" ]; then
-            cp "${TMP_DIR}/chromedriver-${PLATFORM}/chromedriver.exe" "${DRIVER_DIR}/"
-        else
-            # Пробуем найти драйвер в текущем или других подкаталогах
-            find "${TMP_DIR}" -name "chromedriver.exe" -exec cp {} "${DRIVER_DIR}/" \;
-        fi
-    else
-        cp "${TMP_DIR}/chromedriver.exe" "${DRIVER_DIR}/"
-    fi
-    
-    chmod +x "${DRIVER_DIR}/chromedriver.exe"
-    echo "ChromeDriver установлен в ${DRIVER_DIR}/chromedriver.exe"
-else
-    # Для Chrome >= 115 структура архива изменилась, драйвер находится в подкаталоге
-    if [[ "${CHROME_VERSION}" -ge 115 ]]; then
-        if [ -f "${TMP_DIR}/chromedriver-${PLATFORM}/chromedriver" ]; then
-            cp "${TMP_DIR}/chromedriver-${PLATFORM}/chromedriver" "${DRIVER_DIR}/"
-        else
-            # Пробуем найти драйвер в текущем или других подкаталогах
-            find "${TMP_DIR}" -name "chromedriver" -exec cp {} "${DRIVER_DIR}/" \;
-        fi
-    else
-        cp "${TMP_DIR}/chromedriver" "${DRIVER_DIR}/"
-    fi
-    
-    chmod +x "${DRIVER_DIR}/chromedriver"
-    echo "ChromeDriver установлен в ${DRIVER_DIR}/chromedriver"
-fi
+# Install ChromeDriver
+cp "$CHROMEDRIVER_BIN" "$DRIVERS_DIR/chromedriver"
+chmod +x "$DRIVERS_DIR/chromedriver"
 
-# Очистка временной директории
-echo "Очистка временных файлов..."
-rm -rf "${TMP_DIR}"
+echo "ChromeDriver установлен в: $DRIVERS_DIR/chromedriver"
 
-echo "Установка ChromeDriver завершена успешно!"
+# Verify ChromeDriver installation
+echo "Проверка установки ChromeDriver:"
+"$DRIVERS_DIR/chromedriver" --version
+
+echo "===== Установка ChromeDriver завершена ====="
+echo "ChromeDriver теперь поддерживает Chrome версии 123"
+echo "Для наилучшей совместимости, пожалуйста, следуйте инструкциям ниже:"
+echo ""
+echo "ВАЖНО: Для обеспечения совместимости с ChromeDriver 123:"
+echo "1. Используйте аргументы браузера для принудительной совместимости:"
+echo "   --chrome-version=123"
+echo ""
+echo "2. В вашем приложении добавьте следующие опции Chrome:"
+echo "   options.add_argument('--chrome-version=123')"
+echo ""
+echo "3. Если вы используете undetected_chromedriver, используйте параметр version_main:"
+echo "   driver = uc.Chrome(version_main=123)"
+echo ""
+echo "Завершено: $(date)"

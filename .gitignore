@@ -70,3 +70,4 @@ Thumbs.db
 .chrome/
 tmp/
 temp/
+venv/
