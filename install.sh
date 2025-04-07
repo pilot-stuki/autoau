@@ -240,8 +240,8 @@ verify_chrome_installation() {
                 log_warning "Chrome has missing dependencies:"
                 echo "$MISSING_DEPS"
                 log_message "Installing common Chrome dependencies..."
-                yum install -y pango.x86_64 libXcomposite.x86_64 libXcursor.x86_64 libXdamage.x86_64 \
-                    libXext.x86_64 libXi.x86_64 libXtst.x86_64 cups-libs.x86_64 libXScrnSaver.x86_64 \
+                yum install -y pango.x86_64 libXcomposite.x86_64 libXcursor.x86_64 \
+                    libXdamage.x86_64 libXext.x86_64 libXi.x86_64 libXtst.x86_64 cups-libs.x86_64 libXScrnSaver.x86_64 \
                     libXrandr.x86_64 GConf2.x86_64 alsa-lib.x86_64 atk.x86_64 gtk3.x86_64 \
                     xorg-x11-fonts-100dpi xorg-x11-fonts-75dpi xorg-x11-utils \
                     xorg-x11-fonts-cyrillic xorg-x11-fonts-Type1 xorg-x11-fonts-misc
@@ -256,6 +256,107 @@ verify_chrome_installation() {
     log_warning "⚠ Could not verify Chrome version through execution."
     log_message "This is common in headless environments and may be OK for automated operation."
     return 0
+}
+
+# Function to update browser_service.py for headless Chrome
+update_browser_service_for_headless() {
+    log_message "Updating browser_service.py for headless environment compatibility..."
+
+    if [ -f "$APP_DIR/browser_service.py" ]; then
+        # Backup the file first
+        cp "$APP_DIR/browser_service.py" "$APP_DIR/browser_service.py.bak"
+
+        # Add Chrome binary path to options if not already present
+        if ! grep -q "options.binary_location" "$APP_DIR/browser_service.py"; then
+            sed -i '/options.add_argument.*--disable-blink-features=AutomationControlled/a \        # Explicitly set Chrome binary path\n        options.binary_location = "/opt/autoau/bin/google-chrome"' "$APP_DIR/browser_service.py"
+            log_message "Added Chrome binary location to browser_service.py"
+        else
+            # Update existing binary_location to use our wrapper
+            sed -i 's|options.binary_location = ".*"|options.binary_location = "/opt/autoau/bin/google-chrome"|' "$APP_DIR/browser_service.py"
+            log_message "Updated Chrome binary location in browser_service.py"
+        fi
+
+        # Add headless mode options if they don't exist
+        if ! grep -q "options.add_argument('--headless')" "$APP_DIR/browser_service.py"; then
+            sed -i '/options.add_argument.*--disable-blink-features=AutomationControlled/a \        # Enable headless mode for server environment\n        options.add_argument("--headless")\n        options.add_argument("--disable-gpu")\n        options.add_argument("--no-sandbox")\n        options.add_argument("--disable-dev-shm-usage")' "$APP_DIR/browser_service.py"
+            log_message "Added headless mode options to browser_service.py"
+        fi
+
+        # Add Chrome version compatibility setting if needed
+        if ! grep -q "options.add_argument('--chrome-version=123')" "$APP_DIR/browser_service.py"; then
+            sed -i '/options.add_argument.*--disable-blink-features=AutomationControlled/a \        # Force compatibility with ChromeDriver 123\n        options.add_argument("--chrome-version=123")' "$APP_DIR/browser_service.py"
+            log_message "Added Chrome version compatibility setting to browser_service.py"
+        fi
+
+        # Add version_main parameter to undetected_chromedriver if it exists
+        if grep -q "uc_webdriver.Chrome" "$APP_DIR/browser_service.py" && ! grep -q "version_main=123" "$APP_DIR/browser_service.py"; then
+            sed -i '/driver = uc_webdriver.Chrome(/a \                            version_main=123,' "$APP_DIR/browser_service.py"
+            log_message "Added version_main parameter to undetected_chromedriver in browser_service.py"
+        fi
+
+        chown "$SERVICE_USER:$SERVICE_USER" "$APP_DIR/browser_service.py"
+        log_message "browser_service.py updated for headless environment compatibility"
+    else
+        # Try to find the correct browser_service.py file
+        BROWSER_SERVICE_FILE=$(find "$APP_DIR" -name "browser_service.py" 2>/dev/null | head -1)
+        if [ -n "$BROWSER_SERVICE_FILE" ]; then
+            log_message "Found browser_service.py at: $BROWSER_SERVICE_FILE"
+            cp "$BROWSER_SERVICE_FILE" "${BROWSER_SERVICE_FILE}.bak"
+
+            # Add Chrome binary path to options if not already present
+            if ! grep -q "options.binary_location" "$BROWSER_SERVICE_FILE"; then
+                sed -i '/options.add_argument.*--disable-blink-features=AutomationControlled/a \        # Explicitly set Chrome binary path\n        options.binary_location = "/opt/autoau/bin/google-chrome"' "$BROWSER_SERVICE_FILE"
+                log_message "Added Chrome binary location to browser_service.py"
+            else
+                # Update existing binary_location to use our wrapper
+                sed -i 's|options.binary_location = ".*"|options.binary_location = "/opt/autoau/bin/google-chrome"|' "$BROWSER_SERVICE_FILE"
+                log_message "Updated Chrome binary location in browser_service.py"
+            fi
+
+            # Add headless mode options if they don't exist
+            if ! grep -q "options.add_argument('--headless')" "$BROWSER_SERVICE_FILE"; then
+                sed -i '/options.add_argument.*--disable-blink-features=AutomationControlled/a \        # Enable headless mode for server environment\n        options.add_argument("--headless")\n        options.add_argument("--disable-gpu")\n        options.add_argument("--no-sandbox")\n        options.add_argument("--disable-dev-shm-usage")' "$BROWSER_SERVICE_FILE"
+                log_message "Added headless mode options to browser_service.py"
+            fi
+
+            chown "$SERVICE_USER:$SERVICE_USER" "$BROWSER_SERVICE_FILE"
+            log_message "browser_service.py updated for headless environment compatibility"
+        else
+            log_warning "Could not find browser_service.py in the application directory"
+        fi
+    fi
+}
+
+# Function to update service file with environment variables for headless Chrome
+update_service_file_for_headless() {
+    log_message "Updating service file with Chrome environment variables..."
+    if [ -f "/etc/systemd/system/$SERVICE_NAME.service" ]; then
+        # Backup the file first
+        cp "/etc/systemd/system/$SERVICE_NAME.service" "/etc/systemd/system/$SERVICE_NAME.service.bak"
+
+        # Add required environment variables for headless Chrome if not already present
+        if ! grep -q "Environment=\"DISPLAY=:0\"" "/etc/systemd/system/$SERVICE_NAME.service"; then
+            # Add after the PATH variable or another Environment line
+            if grep -q "Environment=.*PATH=.*" "/etc/systemd/system/$SERVICE_NAME.service"; then
+                sed -i '/Environment=.*PATH=.*/a Environment="DISPLAY=:0"\nEnvironment="CHROME_HEADLESS=1"\nEnvironment="CHROME_PATH=/opt/autoau/bin/google-chrome"' "/etc/systemd/system/$SERVICE_NAME.service"
+            else
+                sed -i '/WorkingDirectory=.*/a Environment="DISPLAY=:0"\nEnvironment="CHROME_HEADLESS=1"\nEnvironment="CHROME_PATH=/opt/autoau/bin/google-chrome"' "/etc/systemd/system/$SERVICE_NAME.service"
+            fi
+            log_message "Added Chrome environment variables to service file"
+        fi
+
+        # Update service start command to use xvfb-run if it's available
+        if command -v xvfb-run &>/dev/null && ! grep -q "xvfb-run" "/etc/systemd/system/$SERVICE_NAME.service"; then
+            sed -i "s|^ExecStart=.*|ExecStart=/usr/bin/xvfb-run -a $APP_DIR/service_control.sh start|" "/etc/systemd/system/$SERVICE_NAME.service"
+            log_message "Updated service to use xvfb for virtual display"
+        fi
+
+        # Reload systemd to apply changes
+        systemctl daemon-reload
+        log_message "Service file updated with Chrome environment variables"
+    else
+        log_warning "Service file not found at /etc/systemd/system/$SERVICE_NAME.service. Will be created later."
+    fi
 }
 
 #####################################################
@@ -616,7 +717,7 @@ fi
 
 log_message "Chrome setup completed for Oracle Private Cloud environment"
 
-# Call these functions after Chrome installation logic is complete
+# Call update functions *after* Chrome installation
 update_browser_service_for_headless
 update_service_file_for_headless
 
@@ -730,8 +831,6 @@ if [ -f "$APP_DIR/browser_service.py" ]; then
     if ! grep -q "options.add_argument('--chrome-version=123')" "$APP_DIR/browser_service.py"; then
         sed -i '/options.add_argument.*--disable-blink-features=AutomationControlled/a \        # Force compatibility with ChromeDriver 123\n        options.add_argument("--chrome-version=123")' "$APP_DIR/browser_service.py"
         log_message "Added Chrome version compatibility setting to browser_service.py"
-    else
-        log_message "Chrome version compatibility setting already exists in browser_service.py"
     fi
     
     # Add version_main parameter to undetected_chromedriver if it exists

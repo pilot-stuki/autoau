@@ -143,8 +143,8 @@ class AutomationService:
             try:
                 self.save_screenshot(driver, "popup_before")
                 logger.info(f"Сохранен скриншот перед закрытием всплывающих окон")
-                except Exception as e:
-                    logger.error(f"Не удалось сохранить скриншот: {e}")
+            except Exception as e:
+                logger.error(f"Не удалось сохранить скриншот: {e}")
             
             # Логируем информацию о DOM кратко для экономии времени
             try:
@@ -166,39 +166,39 @@ class AutomationService:
                     if time.time() > max_popup_close_time:
                         break
                     
-                try:
-                    selector_type = selector_info["type"]
-                    selector = selector_info["selector"]
-                    
+                    try:
+                        selector_type = selector_info["type"]
+                        selector = selector_info["selector"]
+                        
                         # Быстрый поиск элементов без долгого ожидания
-                    elements = driver.find_elements(selector_type, selector)
+                        elements = driver.find_elements(selector_type, selector)
                         
                         if elements:
                             logger.info(f"Найдено {len(elements)} элементов: {selector} ({priority})")
-                    
-                    for element in elements:
+                            
+                            for element in elements:
                                 # Еще раз проверяем таймаут
                                 if time.time() > max_popup_close_time:
                                     break
                                 
-                        try:
-                            # Проверяем, что элемент отображается
-                            if element.is_displayed():
-                                # Пробуем JavaScript клик как наиболее надежный
-                                driver.execute_script("arguments[0].click();", element)
+                                try:
+                                    # Проверяем, что элемент отображается
+                                    if element.is_displayed():
+                                        # Пробуем JavaScript клик как наиболее надежный
+                                        driver.execute_script("arguments[0].click();", element)
                                         logger.info(f"Закрыт элемент: {selector}")
-                                
-                                popup_closed = True
-                                
+                                        
+                                        popup_closed = True
+                                        
                                         # Короткая пауза после клика
                                         time.sleep(0.5)
-                                
+                                        
                                         # Если это был высокоприоритетный элемент, завершаем обработку
                                         if priority == "high":
-                                    return True
-                        except Exception as e:
+                                            return True
+                                except Exception as e:
                                     logger.debug(f"Ошибка клика: {e}")
-                except Exception as e:
+                    except Exception as e:
                         logger.debug(f"Ошибка селектора {selector}: {e}")
             
             return popup_closed
@@ -294,7 +294,7 @@ class AutomationService:
             try:
                 popups_closed = self.close_popups(driver)
                 logger.info(f"Закрытие всплывающих окон: {popups_closed}")
-                    except Exception as e:
+            except Exception as e:
                 logger.warning(f"Ошибка при закрытии всплывающих окон: {e}")
                 # Продолжаем работу даже если не удалось закрыть окна
             
@@ -382,7 +382,7 @@ class AutomationService:
                     driver.execute_script("arguments[0].click();", login_button)
                     logger.info("Кнопка login нажата (JS click)")
                     button_click_success = True
-                        except Exception as e:
+                except Exception as e:
                     logger.warning(f"JS клик не сработал: {e}, пробуем другие методы")
                 
                 # 2. Прямой клик если предыдущий не сработал
@@ -458,7 +458,7 @@ class AutomationService:
                     try:
                         self.save_screenshot(driver, "login_failed")
                         logger.info(f"Сохранен скриншот при неудачном входе")
-            except Exception as e:
+                    except Exception as e:
                         logger.error(f"Не удалось сделать скриншот: {e}")
                     
                     raise LoginError(f"Не удалось выполнить вход для {email} - URL остался прежним")
@@ -495,7 +495,7 @@ class AutomationService:
                 # Пробуем получить URL страницы, чтобы убедиться, что драйвер работает
                 current_url = driver.current_url
                 logger.debug(f"Текущий URL: {current_url}")
-                except Exception as e:
+            except Exception as e:
                 logger.error(f"Ошибка соединения с драйвером: {e}")
                 
                 # Если драйвер не отвечает, но нам нужно проверить статус - возвращаем желаемый статус
@@ -554,7 +554,7 @@ class AutomationService:
                             )
                             logger.info(f"Переключатель 'Available Now' найден по XPath: {xpath}")
                             break
-            except Exception as e:
+                        except Exception as e:
                             logger.debug(f"Не найден переключатель по XPath {xpath}: {e}")
                             continue
                     
@@ -639,7 +639,7 @@ class AutomationService:
                             current_state = driver.execute_script(f"return document.querySelector('{selector}').checked")
                             logger.info(f"Текущее состояние переключателя (селектор {selector}): {'ON' if current_state else 'OFF'}")
                             break
-                    except Exception as e:
+                        except Exception as e:
                             logger.debug(f"Не удалось определить состояние через селектор {selector}: {e}")
                             continue
                     
@@ -653,7 +653,7 @@ class AutomationService:
                             # Проверяем класс на активность
                             current_state = ('active' in classes or 'on' in classes or 'checked' in classes)
                             logger.info(f"Состояние определено по классу: {'ON' if current_state else 'OFF'}")
-                    except Exception as e:
+                        except Exception as e:
                             logger.warning(f"Не удалось определить состояние по классу: {e}")
                             
                             # Если все методы не сработали, принимаем решение на основе атрибута aria-checked
@@ -779,7 +779,7 @@ class AutomationService:
                                 logger.info(f"Успешный клик методом {i+1}")
                                 click_success = True
                                 break
-                except Exception as e:
+                            except Exception as e:
                                 logger.debug(f"Ошибка клика методом {i+1}: {e}")
                                 continue
                     
@@ -819,7 +819,7 @@ class AutomationService:
                             driver.execute_script("arguments[0].click();", btn_ok)
                             logger.info(f"Нажата кнопка OK по селектору: {selector}")
                             ok_found = True
-                                break
+                            break
                         except Exception as e:
                             logger.debug(f"Не удалось найти/нажать кнопку OK по селектору {selector}: {e}")
                             continue
@@ -843,7 +843,7 @@ class AutomationService:
                             )
                             logger.info("JavaScript-поиск и клик кнопки OK")
                             ok_found = True
-                except Exception as e:
+                        except Exception as e:
                             logger.warning(f"JavaScript-поиск кнопки OK не сработал: {e}")
                     
                     time.sleep(2)
@@ -880,7 +880,7 @@ class AutomationService:
                                     classes = driver.execute_script("return arguments[0].className;", toggle_element)
                                     new_state = ('active' in classes or 'on' in classes or 'checked' in classes)
                                     logger.info(f"Новое состояние определено по классу: {'ON' if new_state else 'OFF'}")
-                        except Exception as e:
+                            except Exception as e:
                                 logger.warning(f"Не удалось определить новое состояние: {e}")
                                 # Предполагаем успех, если переключение прошло без ошибок до этого момента
                                 new_state = should_be_on
@@ -889,7 +889,7 @@ class AutomationService:
                         if (new_state and should_be_on) or (not new_state and not should_be_on):
                             logger.info(f"Переключатель успешно установлен в положение {'ON' if should_be_on else 'OFF'}")
                             return True
-                else:
+                        else:
                             logger.warning(f"Состояние переключателя не изменилось")
                             
                             # Увеличиваем счетчик попыток
@@ -911,14 +911,14 @@ class AutomationService:
                             # При ошибке stale element обновляем страницу
                             if "stale element" in str(e).lower():
                                 logger.info("Обновляем страницу из-за stale element")
-                        driver.refresh()
+                                driver.refresh()
                                 time.sleep(3)
                             
                             continue
                         else:
                             return False
                 
-                    except Exception as e:
+                except Exception as e:
                     logger.error(f"Ошибка при работе с переключателем: {e}")
                     
                     # Делаем скриншот для диагностики ошибки
@@ -936,7 +936,7 @@ class AutomationService:
                         continue
                     else:
                         return False
-            
+                    
         except Exception as e:
             logger.error(f"Критическая ошибка при работе с переключателем: {e}")
             # Делаем скриншот ошибки
@@ -947,7 +947,7 @@ class AutomationService:
                 pass
             
             return False
-            
+
     def save_screenshot(self, driver, prefix="screenshot"):
         """
         Сохраняет скриншот с использованием настроек из конфигурации
