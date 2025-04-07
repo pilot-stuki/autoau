@@ -383,8 +383,19 @@ class BrowserService:
                         logger.warning(f"Не удалось настроить логирование Chrome: {e}")
                     
                     # 5. Увеличиваем время ожидания на подключение
-                    from selenium.webdriver.remote.remote_connection import RemoteConnection
-                    RemoteConnection.set_timeout(60)  # Увеличиваем до 60 секунд
+                    try:
+                        from selenium.webdriver.remote.remote_connection import RemoteConnection
+                        # Check if set_timeout exists as a class method
+                        if hasattr(RemoteConnection, 'set_timeout') and callable(getattr(RemoteConnection, 'set_timeout')):
+                            RemoteConnection.set_timeout(60)
+                        # For newer Selenium versions
+                        elif hasattr(RemoteConnection, 'get_connection_manager'):
+                            conn_mgr = RemoteConnection.get_connection_manager()
+                            if conn_mgr and hasattr(conn_mgr, 'set_timeout'):
+                                conn_mgr.set_timeout(60)
+                        logger.debug("Установлен таймаут соединения 60 секунд")
+                    except Exception as e:
+                        logger.warning(f"Не удалось установить таймаут соединения: {e}")
                     
                     # Дополнительные оптимизации для GitHub Codespace или для систем с ограниченными ресурсами
                     if is_codespace or is_low_resources:
