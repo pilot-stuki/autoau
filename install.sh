@@ -68,6 +68,197 @@ log_message "Python version: $PYTHON_VERSION"
 log_message "Source directory: $PROJECT_SOURCE"
 
 #####################################################
+# UTILITY FUNCTIONS FOR CHROME SETUP AND VERIFICATION
+#####################################################
+
+# Function to create an enhanced Chrome wrapper script
+create_chrome_wrapper_script() {
+    log_message "Creating enhanced Chrome wrapper script for headless environments..."
+    
+    # Create the wrapper script in the application bin directory
+    cat > "$APP_DIR/bin/google-chrome" << 'EOF'
+#!/bin/bash
+# Enhanced Chrome wrapper script for headless environments
+
+# Path to the real Chrome binary (will be auto-detected if not found)
+CHROME_BIN=""
+
+# Log function
+log() {
+    LOG_DIR="/opt/autoau/logs"
+    mkdir -p "$LOG_DIR"
+    echo "[$(date '+%Y-%m-%d %H:%M:%S')] [Chrome Wrapper] $1" >> "$LOG_DIR/chrome-wrapper.log"
+}
+
+log "Starting Chrome wrapper with args: $@"
+
+# Add headless mode flags automatically if not explicitly provided
+ARGS=("$@")
+NEEDS_HEADLESS=true
+NEEDS_DISABLE_GPU=true
+NEEDS_NO_SANDBOX=true
+NEEDS_DISABLE_DEV_SHM=true
+
+for arg in "${ARGS[@]}"; do
+    if [[ "$arg" == "--headless" ]]; then
+        NEEDS_HEADLESS=false
+    fi
+    if [[ "$arg" == "--disable-gpu" ]]; then
+        NEEDS_DISABLE_GPU=false
+    fi
+    if [[ "$arg" == "--no-sandbox" ]]; then
+        NEEDS_NO_SANDBOX=false
+    fi
+    if [[ "$arg" == "--disable-dev-shm-usage" ]]; then
+        NEEDS_DISABLE_DEV_SHM=false
+    fi
+done
+
+# For version checks, always add these flags
+if [[ "$*" == *"--version"* ]]; then
+    NEEDS_HEADLESS=true
+    NEEDS_DISABLE_GPU=true
+    NEEDS_NO_SANDBOX=true
+    NEEDS_DISABLE_DEV_SHM=true
+fi
+
+# Add the necessary flags for headless environments
+NEW_ARGS=("${ARGS[@]}")
+if [[ "$NEEDS_HEADLESS" == true ]]; then
+    NEW_ARGS+=("--headless")
+fi
+if [[ "$NEEDS_DISABLE_GPU" == true ]]; then
+    NEW_ARGS+=("--disable-gpu")
+fi
+if [[ "$NEEDS_NO_SANDBOX" == true ]]; then
+    NEW_ARGS+=("--no-sandbox")
+fi
+if [[ "$NEEDS_DISABLE_DEV_SHM" == true ]]; then
+    NEW_ARGS+=("--disable-dev-shm-usage")
+fi
+
+# Check for binary in current directory first
+if [ -f "$APP_DIR/bin/chrome" ]; then
+    CHROME_BIN="$APP_DIR/bin/chrome"
+elif [ -f "/opt/google/chrome/chrome" ]; then
+    CHROME_BIN="/opt/google/chrome/chrome"
+elif [ -f "/usr/bin/google-chrome-stable" ]; then
+    CHROME_BIN="/usr/bin/google-chrome-stable"
+else
+    # Perform a more extensive search but exclude our wrapper
+    CHROME_BIN=$(find /bin /usr/bin /opt -name "chrome" -o -name "google-chrome" -type f -executable 2>/dev/null | grep -v "wrapper" | grep -v "$APP_DIR/bin/google-chrome" | head -1)
+fi
+
+if [ -z "$CHROME_BIN" ]; then
+    log "ERROR: Chrome binary not found!"
+    echo "Chrome binary not found. Please install Chrome properly." >&2
+    exit 1
+fi
+
+log "Using Chrome binary: $CHROME_BIN with arguments: ${NEW_ARGS[*]}"
+
+# Set display variable if not set
+if [ -z "$DISPLAY" ]; then
+    export DISPLAY=:0
+fi
+
+# Execute Chrome with the modified arguments
+exec "$CHROME_BIN" "${NEW_ARGS[@]}"
+EOF
+
+    # Make executable and fix ownership
+    chmod +x "$APP_DIR/bin/google-chrome"
+    chown "$SERVICE_USER:$SERVICE_USER" "$APP_DIR/bin/google-chrome"
+    
+    # Create symlink in standard location for system compatibility
+    ln -sf "$APP_DIR/bin/google-chrome" /usr/bin/google-chrome 2>/dev/null || true
+    
+    # Create the same wrapper in the standard Chrome location
+    cat > "/opt/google/chrome/google-chrome" << 'EOF'
+#!/bin/bash
+# Redirector to application's Chrome wrapper
+exec /opt/autoau/bin/google-chrome "$@"
+EOF
+    
+    chmod +x "/opt/google/chrome/google-chrome"
+    
+    log_message "Enhanced Chrome wrapper script created successfully"
+}
+
+# Function to safely verify Chrome installation in headless environments
+verify_chrome_installation() {
+    log_message "Verifying Chrome installation safely in headless environment..."
+    
+    # First check if the binary exists
+    if [ -f "/opt/google/chrome/chrome" ]; then
+        log_message "✓ Chrome binary exists at /opt/google/chrome/chrome"
+    elif [ -f "/opt/google/chrome/google-chrome" ]; then
+        log_message "✓ Chrome binary exists at /opt/google/chrome/google-chrome"
+    elif [ -f "$APP_DIR/bin/chrome" ]; then
+        log_message "✓ Chrome binary exists at $APP_DIR/bin/chrome"
+    else
+        log_error "✗ Chrome binary not found in expected locations"
+        return 1
+    fi
+    
+    # Try to get version using our wrapper script
+    if [ -f "$APP_DIR/bin/google-chrome" ]; then
+        CHROME_VERSION_WRAPPER=$("$APP_DIR/bin/google-chrome" --version 2>/dev/null)
+        if [ -n "$CHROME_VERSION_WRAPPER" ]; then
+            log_message "✓ Chrome version via wrapper: $CHROME_VERSION_WRAPPER"
+            return 0
+        fi
+    fi
+    
+    # Try to get version with headless flags
+    CHROME_VERSION_HEADLESS=$(DISPLAY=:0 /opt/google/chrome/chrome --headless --disable-gpu --no-sandbox --version 2>/dev/null)
+    if [ -n "$CHROME_VERSION_HEADLESS" ]; then
+        log_message "✓ Chrome version (headless mode): $CHROME_VERSION_HEADLESS"
+        return 0
+    fi
+    
+    # Check if RPM reports Chrome as installed
+    if rpm -q google-chrome-stable &>/dev/null; then
+        CHROME_RPM_VERSION=$(rpm -q --queryformat '%{VERSION}' google-chrome-stable)
+        log_message "✓ Chrome installed via RPM with version: $CHROME_RPM_VERSION"
+        return 0
+    fi
+    
+    # If all version checks failed, check file properties as a last resort
+    if [ -f "/opt/google/chrome/chrome" ]; then
+        CHROME_FILE_INFO=$(file /opt/google/chrome/chrome)
+        log_message "Chrome binary file info: $CHROME_FILE_INFO"
+        
+        # Check if it's an executable
+        if [[ "$CHROME_FILE_INFO" == *"executable"* ]]; then
+            log_message "✓ Chrome binary is executable"
+            
+            # Check dependencies
+            log_message "Checking Chrome dependencies..."
+            MISSING_DEPS=$(ldd /opt/google/chrome/chrome 2>/dev/null | grep "not found")
+            if [ -n "$MISSING_DEPS" ]; then
+                log_warning "Chrome has missing dependencies:"
+                echo "$MISSING_DEPS"
+                log_message "Installing common Chrome dependencies..."
+                yum install -y pango.x86_64 libXcomposite.x86_64 libXcursor.x86_64 libXdamage.x86_64 \
+                    libXext.x86_64 libXi.x86_64 libXtst.x86_64 cups-libs.x86_64 libXScrnSaver.x86_64 \
+                    libXrandr.x86_64 GConf2.x86_64 alsa-lib.x86_64 atk.x86_64 gtk3.x86_64 \
+                    xorg-x11-fonts-100dpi xorg-x11-fonts-75dpi xorg-x11-utils \
+                    xorg-x11-fonts-cyrillic xorg-x11-fonts-Type1 xorg-x11-fonts-misc
+            else
+                log_message "✓ Chrome dependencies look good"
+            fi
+        else
+            log_warning "✗ Chrome binary exists but may not be executable"
+        fi
+    fi
+    
+    log_warning "⚠ Could not verify Chrome version through execution."
+    log_message "This is common in headless environments and may be OK for automated operation."
+    return 0
+}
+
+#####################################################
 # 1. PREPARE SYSTEM AND INSTALL DEPENDENCIES
 #####################################################
 
@@ -425,303 +616,9 @@ fi
 
 log_message "Chrome setup completed for Oracle Private Cloud environment"
 
-#####################################################
-# UTILITY FUNCTIONS FOR CHROME SETUP AND VERIFICATION
-#####################################################
-
-# Function to create an enhanced Chrome wrapper script
-create_chrome_wrapper_script() {
-    log_message "Creating enhanced Chrome wrapper script for headless environments..."
-    
-    # Create the wrapper script in the application bin directory
-    cat > "$APP_DIR/bin/google-chrome" << 'EOF'
-#!/bin/bash
-# Enhanced Chrome wrapper script for headless environments
-
-# Path to the real Chrome binary (will be auto-detected if not found)
-CHROME_BIN=""
-
-# Log function
-log() {
-    LOG_DIR="/opt/autoau/logs"
-    mkdir -p "$LOG_DIR"
-    echo "[$(date '+%Y-%m-%d %H:%M:%S')] [Chrome Wrapper] $1" >> "$LOG_DIR/chrome-wrapper.log"
-}
-
-log "Starting Chrome wrapper with args: $@"
-
-# Add headless mode flags automatically if not explicitly provided
-ARGS=("$@")
-NEEDS_HEADLESS=true
-NEEDS_DISABLE_GPU=true
-NEEDS_NO_SANDBOX=true
-NEEDS_DISABLE_DEV_SHM=true
-
-for arg in "${ARGS[@]}"; do
-    if [[ "$arg" == "--headless" ]]; then
-        NEEDS_HEADLESS=false
-    fi
-    if [[ "$arg" == "--disable-gpu" ]]; then
-        NEEDS_DISABLE_GPU=false
-    fi
-    if [[ "$arg" == "--no-sandbox" ]]; then
-        NEEDS_NO_SANDBOX=false
-    fi
-    if [[ "$arg" == "--disable-dev-shm-usage" ]]; then
-        NEEDS_DISABLE_DEV_SHM=false
-    fi
-done
-
-# For version checks, always add these flags
-if [[ "$*" == *"--version"* ]]; then
-    NEEDS_HEADLESS=true
-    NEEDS_DISABLE_GPU=true
-    NEEDS_NO_SANDBOX=true
-    NEEDS_DISABLE_DEV_SHM=true
-fi
-
-# Add the necessary flags for headless environments
-NEW_ARGS=("${ARGS[@]}")
-if [[ "$NEEDS_HEADLESS" == true ]]; then
-    NEW_ARGS+=("--headless")
-fi
-if [[ "$NEEDS_DISABLE_GPU" == true ]]; then
-    NEW_ARGS+=("--disable-gpu")
-fi
-if [[ "$NEEDS_NO_SANDBOX" == true ]]; then
-    NEW_ARGS+=("--no-sandbox")
-fi
-if [[ "$NEEDS_DISABLE_DEV_SHM" == true ]]; then
-    NEW_ARGS+=("--disable-dev-shm-usage")
-fi
-
-# Check for binary in current directory first
-if [ -f "$APP_DIR/bin/chrome" ]; then
-    CHROME_BIN="$APP_DIR/bin/chrome"
-elif [ -f "/opt/google/chrome/chrome" ]; then
-    CHROME_BIN="/opt/google/chrome/chrome"
-elif [ -f "/usr/bin/google-chrome-stable" ]; then
-    CHROME_BIN="/usr/bin/google-chrome-stable"
-else
-    # Perform a more extensive search but exclude our wrapper
-    CHROME_BIN=$(find /bin /usr/bin /opt -name "chrome" -o -name "google-chrome" -type f -executable 2>/dev/null | grep -v "wrapper" | grep -v "$APP_DIR/bin/google-chrome" | head -1)
-fi
-
-if [ -z "$CHROME_BIN" ]; then
-    log "ERROR: Chrome binary not found!"
-    echo "Chrome binary not found. Please install Chrome properly." >&2
-    exit 1
-fi
-
-log "Using Chrome binary: $CHROME_BIN with arguments: ${NEW_ARGS[*]}"
-
-# Set display variable if not set
-if [ -z "$DISPLAY" ]; then
-    export DISPLAY=:0
-fi
-
-# Execute Chrome with the modified arguments
-exec "$CHROME_BIN" "${NEW_ARGS[@]}"
-EOF
-
-    # Make executable and fix ownership
-    chmod +x "$APP_DIR/bin/google-chrome"
-    chown "$SERVICE_USER:$SERVICE_USER" "$APP_DIR/bin/google-chrome"
-    
-    # Create symlink in standard location for system compatibility
-    ln -sf "$APP_DIR/bin/google-chrome" /usr/bin/google-chrome 2>/dev/null || true
-    
-    # Create the same wrapper in the standard Chrome location
-    cat > "/opt/google/chrome/google-chrome" << 'EOF'
-#!/bin/bash
-# Redirector to application's Chrome wrapper
-exec /opt/autoau/bin/google-chrome "$@"
-EOF
-    
-    chmod +x "/opt/google/chrome/google-chrome"
-    
-    log_message "Enhanced Chrome wrapper script created successfully"
-}
-
-# Function to safely verify Chrome installation in headless environments
-verify_chrome_installation() {
-    log_message "Verifying Chrome installation safely in headless environment..."
-    
-    # First check if the binary exists
-    if [ -f "/opt/google/chrome/chrome" ]; then
-        log_message "✓ Chrome binary exists at /opt/google/chrome/chrome"
-    elif [ -f "/opt/google/chrome/google-chrome" ]; then
-        log_message "✓ Chrome binary exists at /opt/google/chrome/google-chrome"
-    elif [ -f "$APP_DIR/bin/chrome" ]; then
-        log_message "✓ Chrome binary exists at $APP_DIR/bin/chrome"
-    else
-        log_error "✗ Chrome binary not found in expected locations"
-        return 1
-    fi
-    
-    # Try to get version using our wrapper script
-    if [ -f "$APP_DIR/bin/google-chrome" ]; then
-        CHROME_VERSION_WRAPPER=$("$APP_DIR/bin/google-chrome" --version 2>/dev/null)
-        if [ -n "$CHROME_VERSION_WRAPPER" ]; then
-            log_message "✓ Chrome version via wrapper: $CHROME_VERSION_WRAPPER"
-            return 0
-        fi
-    fi
-    
-    # Try to get version with headless flags
-    CHROME_VERSION_HEADLESS=$(DISPLAY=:0 /opt/google/chrome/chrome --headless --disable-gpu --no-sandbox --version 2>/dev/null)
-    if [ -n "$CHROME_VERSION_HEADLESS" ]; then
-        log_message "✓ Chrome version (headless mode): $CHROME_VERSION_HEADLESS"
-        return 0
-    fi
-    
-    # Check if RPM reports Chrome as installed
-    if rpm -q google-chrome-stable &>/dev/null; then
-        CHROME_RPM_VERSION=$(rpm -q --queryformat '%{VERSION}' google-chrome-stable)
-        log_message "✓ Chrome installed via RPM with version: $CHROME_RPM_VERSION"
-        return 0
-    fi
-    
-    # If all version checks failed, check file properties as a last resort
-    if [ -f "/opt/google/chrome/chrome" ]; then
-        CHROME_FILE_INFO=$(file /opt/google/chrome/chrome)
-        log_message "Chrome binary file info: $CHROME_FILE_INFO"
-        
-        # Check if it's an executable
-        if [[ "$CHROME_FILE_INFO" == *"executable"* ]]; then
-            log_message "✓ Chrome binary is executable"
-            
-            # Check dependencies
-            log_message "Checking Chrome dependencies..."
-            MISSING_DEPS=$(ldd /opt/google/chrome/chrome 2>/dev/null | grep "not found")
-            if [ -n "$MISSING_DEPS" ]; then
-                log_warning "Chrome has missing dependencies:"
-                echo "$MISSING_DEPS"
-                log_message "Installing common Chrome dependencies..."
-                yum install -y pango.x86_64 libXcomposite.x86_64 libXcursor.x86_64 libXdamage.x86_64 \
-                    libXext.x86_64 libXi.x86_64 libXtst.x86_64 cups-libs.x86_64 libXScrnSaver.x86_64 \
-                    libXrandr.x86_64 GConf2.x86_64 alsa-lib.x86_64 atk.x86_64 gtk3.x86_64 \
-                    xorg-x11-fonts-100dpi xorg-x11-fonts-75dpi xorg-x11-utils \
-                    xorg-x11-fonts-cyrillic xorg-x11-fonts-Type1 xorg-x11-fonts-misc
-            else
-                log_message "✓ Chrome dependencies look good"
-            fi
-        else
-            log_warning "✗ Chrome binary exists but may not be executable"
-        fi
-    fi
-    
-    log_warning "⚠ Could not verify Chrome version through execution."
-    log_message "This is common in headless environments and may be OK for automated operation."
-    return 0
-}
-
-#####################################################
-# UPDATE SERVICE CONFIGURATION FOR HEADLESS CHROME
-#####################################################
-
-# Update browser_service.py to work in headless environments
-update_browser_service_for_headless() {
-    log_message "Updating browser_service.py for headless environment compatibility..."
-    
-    if [ -f "$APP_DIR/browser_service.py" ]; then
-        # Backup the file first
-        cp "$APP_DIR/browser_service.py" "$APP_DIR/browser_service.py.bak"
-        
-        # Add Chrome binary path to options if not already present
-        if ! grep -q "options.binary_location" "$APP_DIR/browser_service.py"; then
-            sed -i '/options.add_argument.*--disable-blink-features=AutomationControlled/a \        # Explicitly set Chrome binary path\n        options.binary_location = "/opt/autoau/bin/google-chrome"' "$APP_DIR/browser_service.py"
-            log_message "Added Chrome binary location to browser_service.py"
-        else
-            # Update existing binary_location to use our wrapper
-            sed -i 's|options.binary_location = ".*"|options.binary_location = "/opt/autoau/bin/google-chrome"|' "$APP_DIR/browser_service.py"
-            log_message "Updated Chrome binary location in browser_service.py"
-        fi
-        
-        # Add headless mode options if they don't exist
-        if ! grep -q "options.add_argument('--headless')" "$APP_DIR/browser_service.py"; then
-            sed -i '/options.add_argument.*--disable-blink-features=AutomationControlled/a \        # Enable headless mode for server environment\n        options.add_argument("--headless")\n        options.add_argument("--disable-gpu")\n        options.add_argument("--no-sandbox")\n        options.add_argument("--disable-dev-shm-usage")' "$APP_DIR/browser_service.py"
-            log_message "Added headless mode options to browser_service.py"
-        fi
-        
-        # Add Chrome version compatibility setting if needed
-        if ! grep -q "options.add_argument('--chrome-version=123')" "$APP_DIR/browser_service.py"; then
-            sed -i '/options.add_argument.*--disable-blink-features=AutomationControlled/a \        # Force compatibility with ChromeDriver 123\n        options.add_argument("--chrome-version=123")' "$APP_DIR/browser_service.py"
-            log_message "Added Chrome version compatibility setting to browser_service.py"
-        fi
-        
-        # Add version_main parameter to undetected_chromedriver if it exists
-        if grep -q "uc_webdriver.Chrome" "$APP_DIR/browser_service.py" && ! grep -q "version_main=123" "$APP_DIR/browser_service.py"; then
-            sed -i '/driver = uc_webdriver.Chrome(/a \                            version_main=123,' "$APP_DIR/browser_service.py"
-            log_message "Added version_main parameter to undetected_chromedriver in browser_service.py"
-        fi
-        
-        chown "$SERVICE_USER:$SERVICE_USER" "$APP_DIR/browser_service.py"
-        log_message "browser_service.py updated for headless environment compatibility"
-    else
-        # Try to find the correct browser_service.py file
-        BROWSER_SERVICE_FILE=$(find "$APP_DIR" -name "browser_service.py" 2>/dev/null | head -1)
-        if [ -n "$BROWSER_SERVICE_FILE" ]; then
-            log_message "Found browser_service.py at: $BROWSER_SERVICE_FILE"
-            cp "$BROWSER_SERVICE_FILE" "${BROWSER_SERVICE_FILE}.bak"
-            
-            # Add Chrome binary path to options if not already present
-            if ! grep -q "options.binary_location" "$BROWSER_SERVICE_FILE"; then
-                sed -i '/options.add_argument.*--disable-blink-features=AutomationControlled/a \        # Explicitly set Chrome binary path\n        options.binary_location = "/opt/autoau/bin/google-chrome"' "$BROWSER_SERVICE_FILE"
-                log_message "Added Chrome binary location to browser_service.py"
-            else
-                # Update existing binary_location to use our wrapper
-                sed -i 's|options.binary_location = ".*"|options.binary_location = "/opt/autoau/bin/google-chrome"|' "$BROWSER_SERVICE_FILE"
-                log_message "Updated Chrome binary location in browser_service.py"
-            fi
-            
-            # Add headless mode options if they don't exist
-            if ! grep -q "options.add_argument('--headless')" "$BROWSER_SERVICE_FILE"; then
-                sed -i '/options.add_argument.*--disable-blink-features=AutomationControlled/a \        # Enable headless mode for server environment\n        options.add_argument("--headless")\n        options.add_argument("--disable-gpu")\n        options.add_argument("--no-sandbox")\n        options.add_argument("--disable-dev-shm-usage")' "$BROWSER_SERVICE_FILE"
-                log_message "Added headless mode options to browser_service.py"
-            fi
-            
-            chown "$SERVICE_USER:$SERVICE_USER" "$BROWSER_SERVICE_FILE"
-            log_message "browser_service.py updated for headless environment compatibility"
-        else
-            log_warning "Could not find browser_service.py in the application directory"
-        fi
-    fi
-}
-
-# Update service file with environment variables for headless Chrome
-update_service_file_for_headless() {
-    log_message "Updating service file with Chrome environment variables..."
-    if [ -f "/etc/systemd/system/$SERVICE_NAME.service" ]; then
-        # Backup the file first
-        cp "/etc/systemd/system/$SERVICE_NAME.service" "/etc/systemd/system/$SERVICE_NAME.service.bak"
-        
-        # Add required environment variables for headless Chrome if not already present
-        if ! grep -q "Environment=\"DISPLAY=:0\"" "/etc/systemd/system/$SERVICE_NAME.service"; then
-            sed -i '/Environment=.*SELENIUM_EXCLUDE_DV_CHECK=true/a Environment="DISPLAY=:0"\nEnvironment="CHROME_HEADLESS=1"\nEnvironment="CHROME_PATH=/opt/autoau/bin/google-chrome"' "/etc/systemd/system/$SERVICE_NAME.service"
-            log_message "Added Chrome environment variables to service file"
-        fi
-        
-        # Update service start command to use xvfb-run if it's available
-        if command -v xvfb-run &>/dev/null && ! grep -q "xvfb-run" "/etc/systemd/system/$SERVICE_NAME.service"; then
-            sed -i "s|^ExecStart=.*|ExecStart=/usr/bin/xvfb-run -a $APP_DIR/service_control.sh start|" "/etc/systemd/system/$SERVICE_NAME.service"
-            log_message "Updated service to use xvfb for virtual display"
-        fi
-        
-        # Reload systemd to apply changes
-        systemctl daemon-reload
-        log_message "Service file updated with Chrome environment variables"
-    else
-        log_warning "Service file not found at /etc/systemd/system/$SERVICE_NAME.service"
-    fi
-}
-
-# Call these functions after Chrome installation
+# Call these functions after Chrome installation logic is complete
 update_browser_service_for_headless
 update_service_file_for_headless
-
-# For validation section (replace "Verify Chrome installation" with this call)
-# verify_chrome_installation
 
 #####################################################
 # 4. INSTALL CHROMEDRIVER

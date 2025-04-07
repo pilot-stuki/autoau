@@ -19,7 +19,7 @@ def log_memory_usage():
     """
     try:
         # Получаем информацию о виртуальной памяти
-        mem = psutil.virtual_memory()
+    mem = psutil.virtual_memory()
         
         # Получаем информацию о текущем процессе
         try:
@@ -52,8 +52,8 @@ def log_chrome_processes():
                         chrome_processes.append((proc.info['pid'], memory_mb))
             except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
                 # Пропускаем процессы, к которым нет доступа или которые уже завершились
-                continue
-
+            continue
+            
         if chrome_processes:
             return f"{len(chrome_processes)} processes, {sum(m for _, m in chrome_processes):.1f}MB"
         else:

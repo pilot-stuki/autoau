@@ -703,7 +703,7 @@ class ServiceWrapper:
                     else:
                         success = False
             except Exception as e:
-                service_logger.error(f"Ошибка при выполнении операции '{operation_name}': {e}")
+                service_logger.error(f"Ошибка при выполнении операции: {e}")
                 
                 # Добавляем вывод конкретного exception для отладки
                 import traceback
@@ -863,7 +863,7 @@ class ServiceWrapper:
         
         # Итоговая очистка
         browser_service.cleanup_all_drivers()
-        
+                
         return results
 
     def process_accounts_parallel(self, accounts, max_workers=None):
@@ -938,7 +938,7 @@ class ServiceWrapper:
                 if not login_result:
                     logger.error(f"Не удалось выполнить вход для проверки состояния переключателя ({email})")
                     return None
-                    
+                
                 driver, _ = login_result
                 logger.info(f"Успешный вход для {email} при проверке переключателя")
             except Exception as e:
@@ -1026,7 +1026,6 @@ class ServiceWrapper:
                 
                 # Код не должен дойти сюда, но возвращаем None на всякий случай
                 return None
-                
             except Exception as e:
                 logger.error(f"Ошибка при проверке состояния переключателя для {email}: {e}")
                 
@@ -1039,7 +1038,6 @@ class ServiceWrapper:
                     pass
                 
                 return None
-                
         except Exception as e:
             logger.error(f"Непредвиденная ошибка при проверке состояния переключателя для {email}: {e}")
             return None
