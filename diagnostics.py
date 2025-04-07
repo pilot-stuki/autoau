@@ -5,6 +5,8 @@ import time
 import logging
 import psutil
 import platform
+import stat
+from pathlib import Path
 from datetime import datetime
 
 # Настройка логгера
@@ -43,13 +45,17 @@ def log_chrome_processes():
     try:
         # Безопасное получение информации о Chrome процессах
         chrome_processes = []
-        for proc in psutil.process_iter(['pid', 'name', 'memory_info']):
+        for proc in psutil.process_iter(['pid', 'name', 'memory_info', 'cmdline']):
             try:
-                if 'chrome' in proc.info['name'].lower():
+                proc_name = proc.info['name'].lower() if proc.info.get('name') else ''
+                is_chrome = 'chrome' in proc_name or 'google-chrome' in proc_name
+                if is_chrome:
                     memory = proc.info.get('memory_info')
                     if memory:
                         memory_mb = memory.rss / (1024 * 1024)
                         chrome_processes.append((proc.info['pid'], memory_mb))
+                    else:
+                        chrome_processes.append((proc.info['pid'], 0))
             except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
                 # Пропускаем процессы, к которым нет доступа или которые уже завершились
                 continue
@@ -134,6 +140,152 @@ def log_network_status():
     except Exception as e:
         logger.error(f"Ошибка при проверке сетевого статуса: {e}")
 
+def verify_chrome_installation():
+    """
+    Проверяет установку Chrome и связанные компоненты
+    
+    Returns:
+        dict: Словарь с результатами проверки
+    """
+    results = {
+        "chrome_binary_exists": False,
+        "chrome_binary_path": None,
+        "chrome_binary_executable": False,
+        "chrome_binary_permissions": None,
+        "chrome_driver_exists": False,
+        "chrome_driver_path": None,
+        "chrome_driver_executable": False,
+        "tmp_dir_writable": False,
+        "display_set": False
+    }
+    
+    # Проверяем Chrome бинарный файл
+    chrome_paths = [
+        "/opt/google/chrome/google-chrome",
+        "/opt/google/chrome/chrome",
+        "/usr/bin/google-chrome",
+        "/opt/autoau/bin/google-chrome"
+    ]
+    
+    for path in chrome_paths:
+        if os.path.exists(path):
+            results["chrome_binary_exists"] = True
+            results["chrome_binary_path"] = path
+            
+            # Проверяем запускаемость
+            is_executable = os.access(path, os.X_OK)
+            results["chrome_binary_executable"] = is_executable
+            
+            # Получаем права доступа
+            try:
+                file_stat = os.stat(path)
+                permissions = stat.filemode(file_stat.st_mode)
+                results["chrome_binary_permissions"] = permissions
+            except Exception as e:
+                logger.warning(f"Не удалось получить права доступа для {path}: {e}")
+            
+            break
+    
+    # Проверяем ChromeDriver
+    chromedriver_paths = [
+        "/opt/autoau/drivers/chromedriver",
+        os.path.join(os.path.dirname(os.path.abspath(__file__)), "drivers", "chromedriver")
+    ]
+    
+    for path in chromedriver_paths:
+        if os.path.exists(path):
+            results["chrome_driver_exists"] = True
+            results["chrome_driver_path"] = path
+            results["chrome_driver_executable"] = os.access(path, os.X_OK)
+            break
+    
+    # Проверяем наличие переменной DISPLAY
+    display = os.environ.get("DISPLAY")
+    results["display_set"] = display is not None
+    results["display_value"] = display
+    
+    # Проверяем доступность /tmp для записи
+    try:
+        tmp_dir = "/tmp"
+        test_file = os.path.join(tmp_dir, f"chrome_test_{int(time.time())}")
+        with open(test_file, "w") as f:
+            f.write("test")
+        os.remove(test_file)
+        results["tmp_dir_writable"] = True
+    except Exception as e:
+        logger.warning(f"Директория /tmp недоступна для записи: {e}")
+    
+    return results
+
+def check_chrome_process_health():
+    """
+    Проверяет здоровье процессов Chrome и выполняет очистку при необходимости
+    
+    Returns:
+        dict: Информация о процессах Chrome
+    """
+    results = {
+        "total_processes": 0,
+        "zombie_processes": 0,
+        "hanging_processes": 0,
+        "processes_cleaned": 0,
+        "total_memory_mb": 0
+    }
+    
+    try:
+        chrome_processes = []
+        zombie_procs = []
+        hanging_procs = []
+        
+        for proc in psutil.process_iter(['pid', 'name', 'status', 'memory_info', 'cpu_percent', 'create_time']):
+            try:
+                proc_name = proc.info['name'].lower() if proc.info.get('name') else ''
+                
+                is_chrome = 'chrome' in proc_name or 'google-chrome' in proc_name
+                if not is_chrome:
+                    continue
+                    
+                chrome_processes.append(proc)
+                
+                # Проверка на зомби-процесс
+                if proc.info.get('status') == psutil.STATUS_ZOMBIE:
+                    zombie_procs.append(proc)
+                    continue
+                
+                # Проверка на зависший процесс (0% CPU и давно работает)
+                if proc.info.get('cpu_percent', 0) == 0 and proc.info.get('create_time'):
+                    proc_age = time.time() - proc.info['create_time']
+                    if proc_age > 300:  # Более 5 минут без активности CPU
+                        hanging_procs.append(proc)
+                
+                # Суммируем память
+                memory = proc.info.get('memory_info')
+                if memory:
+                    results["total_memory_mb"] += memory.rss / (1024 * 1024)
+                    
+            except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
+                continue
+        
+        results["total_processes"] = len(chrome_processes)
+        results["zombie_processes"] = len(zombie_procs)
+        results["hanging_processes"] = len(hanging_procs)
+        
+        # Очистка проблемных процессов, если их слишком много
+        if len(zombie_procs) > 3 or len(hanging_procs) > 2:
+            logger.warning(f"Обнаружено {len(zombie_procs)} зомби и {len(hanging_procs)} зависших процессов Chrome. Запуск очистки.")
+            
+            for proc in zombie_procs + hanging_procs:
+                try:
+                    proc.kill()
+                    results["processes_cleaned"] += 1
+                except Exception:
+                    pass
+    
+    except Exception as e:
+        logger.error(f"Ошибка при проверке здоровья процессов Chrome: {e}")
+    
+    return results
+
 def diagnose_system():
     """
     Проводит комплексную диагностику системы
@@ -144,10 +296,28 @@ def diagnose_system():
     log_system_info()
     
     # Проверяем использование памяти
-    log_memory_usage()
+    memory_info = log_memory_usage()
+    logger.info(f"Использование памяти: {memory_info}")
     
-    # Проверяем процессы Chrome (с таймаутом 3 секунды)
-    log_chrome_processes()
+    # Проверяем процессы Chrome
+    chrome_info = log_chrome_processes()
+    logger.info(f"Процессы Chrome: {chrome_info}")
+    
+    # Проверяем установку Chrome
+    chrome_installation = verify_chrome_installation()
+    logger.info(f"Проверка Chrome: бинарный файл={chrome_installation['chrome_binary_path']}, "  
+                f"существует={chrome_installation['chrome_binary_exists']}, "  
+                f"исполняемый={chrome_installation['chrome_binary_executable']}")
+    logger.info(f"Проверка ChromeDriver: существует={chrome_installation['chrome_driver_exists']}, "  
+                f"путь={chrome_installation['chrome_driver_path']}")
+    logger.info(f"Переменная DISPLAY: {chrome_installation['display_value']}")
+    
+    # Проверяем здоровье процессов Chrome
+    chrome_health = check_chrome_process_health()
+    logger.info(f"Здоровье Chrome: всего={chrome_health['total_processes']}, "  
+                f"зомби={chrome_health['zombie_processes']}, "  
+                f"зависшие={chrome_health['hanging_processes']}, "  
+                f"очищено={chrome_health['processes_cleaned']}")
     
     # Проверяем сетевое подключение
     log_network_status()
@@ -159,4 +329,4 @@ if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
     
     # Запуск диагностики
-    diagnose_system() 
+    diagnose_system()
