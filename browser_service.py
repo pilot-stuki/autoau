@@ -132,7 +132,9 @@ class BrowserService:
             '/usr/bin/chromium-browser',
             '/usr/bin/chromium',
             '/snap/bin/chromium',
-            '/snap/bin/google-chrome'
+            '/snap/bin/google-chrome',
+            '/opt/google/chrome/google-chrome',
+            '/opt/autoau/bin/google-chrome'
         ]
         
         for path in possible_paths:
@@ -254,6 +256,15 @@ class BrowserService:
         if headless:
             options.add_argument('--headless=new')
             logger.debug("Включен безголовый режим Chrome")
+        
+        # Устанавливаем путь к бинарному файлу Chrome
+        chrome_binary = os.environ.get('CHROME_PATH', '/opt/google/chrome/google-chrome')
+        if os.path.exists(chrome_binary):
+            options.binary_location = chrome_binary
+            logger.debug(f"Установлен путь к Chrome: {chrome_binary}")
+        elif self.chrome_path and os.path.exists(self.chrome_path):
+            options.binary_location = self.chrome_path
+            logger.debug(f"Установлен путь к Chrome: {self.chrome_path}")
             
         # Режим инкогнито
         if incognito:
@@ -267,6 +278,14 @@ class BrowserService:
         options.add_argument('--start-maximized')
         options.add_argument('--disable-background-networking')
         
+        # Критически важные параметры для запуска в серверной среде
+        options.add_argument('--no-sandbox')
+        options.add_argument('--disable-dev-shm-usage')
+        options.add_argument('--disable-gpu')
+        
+        # Параметры для стабильного запуска в headless режиме
+        options.add_argument('--window-size=1280,1024')
+        
         # Отключаем логирование
         options.add_experimental_option('excludeSwitches', ['enable-logging'])
         options.add_argument('--log-level=3')  # Только критические ошибки
@@ -275,6 +294,7 @@ class BrowserService:
         options.add_experimental_option("excludeSwitches", ["enable-automation"])
         options.add_experimental_option('useAutomationExtension', False)
         options.add_argument('--disable-blink-features=AutomationControlled')
+        
         # Force compatibility with ChromeDriver 123
         options.add_argument('--chrome-version=123')
         
@@ -283,9 +303,10 @@ class BrowserService:
         
         # Оптимизации для систем с ограниченными ресурсами
         if self.optimize_for_low_resources:
-            options.add_argument('--disable-gpu')
-            options.add_argument('--no-sandbox')
-            options.add_argument('--disable-dev-shm-usage')
+            options.add_argument('--disable-extensions')
+            options.add_argument('--js-flags="--max-old-space-size=128"')
+            options.add_argument('--mute-audio')
+            options.add_argument('--blink-settings=imagesEnabled=false')
             
         return options
         
@@ -321,11 +342,51 @@ class BrowserService:
             retry_count = 0
             last_exception = None
             
+            # Создаем временную директорию для данных пользователя Chrome
+            user_data_dir = None
+            
             while retry_count < max_retries:
                 try:
                     options = self._get_chrome_options(headless, incognito)
                     
-                    # Дополнительные оптимизации для GitHub Codespace
+                    # *** КРИТИЧЕСКИЕ ИЗМЕНЕНИЯ ДЛЯ РЕШЕНИЯ ПРОБЛЕМЫ С DEVTOOLSACTIVEPORT ***
+                    
+                    # 1. Создаем уникальную временную директорию для профиля Chrome
+                    try:
+                        user_data_dir = tempfile.mkdtemp(prefix="chrome_user_data_")
+                        logger.debug(f"Создана временная директория для Chrome: {user_data_dir}")
+                        options.add_argument(f"--user-data-dir={user_data_dir}")
+                    except Exception as e:
+                        logger.warning(f"Не удалось создать временную директорию: {e}")
+                    
+                    # 2. Используем случайный порт для отладки, чтобы избежать конфликтов
+                    random_port = random.randint(9222, 19222)
+                    options.add_argument(f"--remote-debugging-port={random_port}")
+                    
+                    # 3. Принудительная установка важных опций
+                    if "--disable-dev-shm-usage" not in str(options.arguments):
+                        options.add_argument("--disable-dev-shm-usage")
+                    
+                    if "--no-sandbox" not in str(options.arguments):
+                        options.add_argument("--no-sandbox")
+                    
+                    # 4. Устанавливаем пути к логам Chrome для диагностики
+                    log_path = None
+                    try:
+                        log_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "logs")
+                        os.makedirs(log_dir, exist_ok=True)
+                        log_path = os.path.join(log_dir, f"chrome_debug_{int(time.time())}.log")
+                        options.add_argument(f"--log-file={log_path}")
+                        options.add_argument("--enable-logging")
+                        options.add_argument("--v=1")
+                    except Exception as e:
+                        logger.warning(f"Не удалось настроить логирование Chrome: {e}")
+                    
+                    # 5. Увеличиваем время ожидания на подключение
+                    from selenium.webdriver.remote.remote_connection import RemoteConnection
+                    RemoteConnection.set_timeout(60)  # Увеличиваем до 60 секунд
+                    
+                    # Дополнительные оптимизации для GitHub Codespace или для систем с ограниченными ресурсами
                     if is_codespace or is_low_resources:
                         # Принудительно включаем оптимизации для низких ресурсов
                         logger.info("Применяются дополнительные оптимизации для среды с ограниченными ресурсами")
@@ -339,11 +400,15 @@ class BrowserService:
                         options.add_argument('--js-flags="--max-old-space-size=128"')
                     
                     # Добавляем настройки для повышения стабильности сетевых соединений
-                    options.add_argument('--disable-dev-shm-usage')
-                    options.add_argument('--no-sandbox')
                     options.add_argument('--dns-prefetch-disable')
                     
+                    # 6. Устанавливаем переменные окружения для Chrome
+                    os.environ["DISPLAY"] = os.environ.get("DISPLAY", ":0")
+                    
+                    # Создаем сервис с указанием драйвера
                     service = Service(executable_path=self.driver_path)
+                    
+                    # Запускаем драйвер с настроенными опциями
                     driver = webdriver.Chrome(service=service, options=options)
                     driver.set_page_load_timeout(60)  # увеличиваем таймаут загрузки страницы
                     driver.implicitly_wait(implicit_wait)  # время ожидания элементов
@@ -354,6 +419,10 @@ class BrowserService:
                     
                     # Отслеживаем созданный драйвер для последующей очистки
                     self.active_drivers.append(driver)
+                    
+                    # Сохраняем директорию для дальнейшей очистки
+                    if user_data_dir:
+                        setattr(driver, "_user_data_dir", user_data_dir)
                     
                     # Инжектируем JavaScript для маскировки автоматизации
                     self._hide_automation_flags(driver)
@@ -366,6 +435,17 @@ class BrowserService:
                     last_exception = e
                     error_message = str(e).lower()
                     
+                    # Очищаем временную директорию после неудачи
+                    if user_data_dir and os.path.exists(user_data_dir):
+                        try:
+                            shutil.rmtree(user_data_dir)
+                            logger.debug(f"Удалена временная директория: {user_data_dir}")
+                        except Exception as cleanup_error:
+                            logger.warning(f"Не удалось удалить временную директорию: {cleanup_error}")
+                    
+                    # Логируем ошибку подробно
+                    logger.error(f"Ошибка при создании драйвера (попытка {retry_count}/{max_retries}): {e}")
+                    
                     # Обработка различных типов ошибок
                     if "browser version" in error_message:
                         logger.error(f"Несоответствие версий Chrome и ChromeDriver: {e}")
@@ -374,7 +454,7 @@ class BrowserService:
                             self.install_chromedriver()
                         except Exception as install_error:
                             logger.error(f"Ошибка при автоматической установке ChromeDriver: {install_error}")
-                            # Продолжаем цикл повторных попыток
+                    
                     elif "executable needs to be in path" in error_message:
                         logger.error(f"Chrome Driver не найден на указанном пути: {self.driver_path}")
                         try:
@@ -382,19 +462,34 @@ class BrowserService:
                             self.install_chromedriver()
                         except Exception as install_error:
                             logger.error(f"Ошибка при автоматической установке ChromeDriver: {install_error}")
-                            # Продолжаем цикл повторных попыток
-                    elif "chrome failed to start" in error_message:
+                    
+                    elif "chrome failed to start" in error_message or "devtoolsactiveport file doesn't exist" in error_message:
                         logger.error(f"Chrome не удалось запустить: {e}")
                         # Пробуем очистить процессы Chrome перед следующей попыткой
                         self.kill_chrome_processes()
+                        # Проверяем переменную DISPLAY
+                        logger.info(f"Переменная DISPLAY={os.environ.get('DISPLAY', 'не установлена')}")
+                        # Проверяем доступ к /tmp
+                        try:
+                            test_tmp = os.path.join('/tmp', f'test_chrome_{time.time()}')
+                            with open(test_tmp, 'w') as f:
+                                f.write('test')
+                            os.remove(test_tmp)
+                            logger.info("Проверка доступа к /tmp: ОК")
+                        except Exception as tmp_error:
+                            logger.error(f"Проблема с доступом к /tmp: {tmp_error}")
+                        # Увеличиваем паузу перед следующей попыткой
+                        time.sleep(2 * (retry_count + 1))
+                    
                     elif "retrieval incomplete" in error_message or "network error" in error_message:
                         logger.error(f"Сетевая ошибка при создании драйвера: {e}")
                         # Пауза перед следующей попыткой
                         pause_time = 5 * (retry_count + 1)  # 5, 10, 15 секунд
                         logger.info(f"Ожидание {pause_time} секунд перед следующей попыткой")
                         time.sleep(pause_time)
+                    
                     else:
-                        logger.error(f"Ошибка при создании драйвера Chrome (попытка {retry_count}/{max_retries}): {e}")
+                        logger.error(f"Неизвестная ошибка при создании драйвера: {e}")
                         # Небольшая пауза перед повторной попыткой
                         time.sleep(2)
                         
@@ -423,6 +518,14 @@ class BrowserService:
                     logger.error(f"Неожиданная ошибка при создании драйвера Chrome: {e}")
                     # В случае ошибки пробуем удалить все активные драйверы
                     self.cleanup_all_drivers()
+                    
+                    # Очищаем временную директорию
+                    if user_data_dir and os.path.exists(user_data_dir):
+                        try:
+                            shutil.rmtree(user_data_dir)
+                        except Exception:
+                            pass
+                            
                     raise
 
     def _hide_automation_flags(self, driver):
@@ -471,6 +574,9 @@ class BrowserService:
         if driver is None:
             return
             
+        # Очищаем временную директорию, если она была создана
+        user_data_dir = getattr(driver, "_user_data_dir", None)
+            
         try:
             # Пытаемся корректно закрыть драйвер
             driver.quit()
@@ -481,6 +587,14 @@ class BrowserService:
         # Удаляем драйвер из списка активных
         if driver in self.active_drivers:
             self.active_drivers.remove(driver)
+            
+        # Удаляем временную директорию после закрытия драйвера
+        if user_data_dir and os.path.exists(user_data_dir):
+            try:
+                shutil.rmtree(user_data_dir)
+                logger.debug(f"Удалена временная директория: {user_data_dir}")
+            except Exception as e:
+                logger.warning(f"Не удалось удалить временную директорию {user_data_dir}: {e}")
 
     def cleanup_unused_drivers(self):
         """
@@ -700,6 +814,15 @@ class BrowserService:
                 if incognito:
                     options.add_argument('--incognito')
                 
+                # Создаем временную директорию для профиля
+                user_data_dir = None
+                try:
+                    user_data_dir = tempfile.mkdtemp(prefix="uc_chrome_user_data_")
+                    logger.debug(f"Создана временная директория для undetected_chromedriver: {user_data_dir}")
+                    options.add_argument(f"--user-data-dir={user_data_dir}")
+                except Exception as e:
+                    logger.warning(f"Не удалось создать временную директорию для undetected_chromedriver: {e}")
+                
                 # Дополнительные настройки для оптимизации
                 options.add_argument('--start-maximized')
                 options.add_argument('--disable-extensions')
@@ -707,12 +830,24 @@ class BrowserService:
                 options.add_argument('--disable-dev-shm-usage')
                 options.add_argument('--no-sandbox')
                 
+                # Используем случайный порт для отладки
+                random_port = random.randint(9222, 19222)
+                options.add_argument(f"--remote-debugging-port={random_port}")
+                
                 # Увеличенные таймауты для сетевых операций
                 options.add_argument('--dns-prefetch-disable')
                 
                 # Добавляем настройки для стабильности соединения
                 options.add_argument('--disable-features=NetworkService')
                 options.add_argument('--disable-features=VizDisplayCompositor')
+                
+                # Устанавливаем переменную DISPLAY
+                os.environ["DISPLAY"] = os.environ.get("DISPLAY", ":0")
+                
+                # Устанавливаем путь к бинарному файлу Chrome
+                chrome_binary = os.environ.get('CHROME_PATH')
+                if chrome_binary and os.path.exists(chrome_binary):
+                    options.binary_location = chrome_binary
                 
                 max_retries = 3
                 retry_count = 0
@@ -727,6 +862,10 @@ class BrowserService:
                             version_main=123
                         )
                         
+                        # Сохраняем директорию для дальнейшей очистки
+                        if user_data_dir:
+                            setattr(driver, "_user_data_dir", user_data_dir)
+                        
                         # Отслеживаем созданный драйвер для последующей очистки
                         self.active_drivers.append(driver)
                         
@@ -736,6 +875,14 @@ class BrowserService:
                         retry_count += 1
                         last_error = e
                         logger.warning(f"Ошибка при создании undetected Chrome Driver (попытка {retry_count}/{max_retries}): {e}")
+                        
+                        # Очищаем временную директорию после неудачи
+                        if user_data_dir and os.path.exists(user_data_dir):
+                            try:
+                                shutil.rmtree(user_data_dir)
+                                logger.debug(f"Удалена временная директория: {user_data_dir}")
+                            except Exception as cleanup_error:
+                                logger.warning(f"Не удалось удалить временную директорию: {cleanup_error}")
                         
                         # Очистка перед повторной попыткой
                         self.kill_chrome_processes()
@@ -770,4 +917,4 @@ def get_browser_service():
             if _browser_service_instance is None:  # двойная проверка для избежания состояния гонки
                 _browser_service_instance = BrowserService()
                 
-    return _browser_service_instance 
+    return _browser_service_instance
